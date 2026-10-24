@@ -11,7 +11,7 @@ const TONES: Record<DealRating, { box: string; badge: string }> = {
   overpriced: { box: "border-rose-200 bg-rose-50", badge: "bg-rose-600 text-white" },
 };
 
-export function DealCard({ deal, factors }: { deal: DealVerdict; factors: PriceFactor[] }) {
+export function DealCard({ deal, factors, warnings = [] }: { deal: DealVerdict; factors: PriceFactor[]; warnings?: string[] }) {
   // a suspiciously low price is a warning, not a win
   const tone = deal.too_good_to_be_true ? TONES.high : TONES[deal.rating];
   const label = deal.too_good_to_be_true ? "Suspiciously low" : deal.label;
@@ -25,6 +25,16 @@ export function DealCard({ deal, factors }: { deal: DealVerdict; factors: PriceF
         </span>
       </div>
       <p className="mt-3 text-sm text-slate-700">{deal.summary}</p>
+      {warnings.length > 0 && (
+        <div className="mt-3 rounded-xl border border-amber-300 bg-white/70 px-3 py-2 text-sm text-amber-900" role="note">
+          <p className="font-semibold">Treat this rating with caution</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            {warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {deal.too_good_to_be_true && (
         <p className="mt-3 rounded-xl bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900" role="alert">
           Price looks too good to be true. Ask for a vehicle history report first.

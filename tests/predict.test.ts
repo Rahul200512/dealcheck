@@ -135,3 +135,52 @@ describe("condition", () => {
     }
   });
 });
+
+describe("inputs that contradict the training data", () => {
+  const warningsFor = (input: PredictionInput) => predictPrice(artifact, input).warnings.join(" | ");
+
+  it("flags fuel, transmission and an engine on an electric-only model", () => {
+    const w = warningsFor({ manufacturer: "Tesla", model: "Model 3", year: 2022, mileage: 28000, fuel_type: "Gasoline", transmission: "Manual", engine_size: 5 });
+    expect(w).toMatch(/fuel type "Gasoline"/);
+    expect(w).toMatch(/transmission "Manual"/);
+    expect(w).toMatch(/with an engine/);
+  });
+
+  it("flags a year outside the model's range", () => {
+    expect(warningsFor({ manufacturer: "Tesla", model: "Model 3", year: 2004, mileage: 100000, fuel_type: "Electric" })).toMatch(/only seen from 2018/);
+  });
+
+  it("flags body, drivetrain and engine size the model never had", () => {
+    const w = warningsFor({ manufacturer: "Honda", model: "Civic", year: 2018, mileage: 60000, body_type: "Truck", drivetrain: "4WD", engine_size: 6.2 });
+    expect(w).toMatch(/body type "Truck"/);
+    expect(w).toMatch(/drivetrain "4WD"/);
+    expect(w).toMatch(/6.2 L engine/);
+  });
+
+  it("flags implausible miles for the car's age", () => {
+    expect(warningsFor({ ...camry, year: 2025, mileage: 300000 })).toMatch(/miles a year/);
+  });
+
+  it("stays quiet for every valid catalogue combination", () => {
+    for (const make of artifact.catalog) {
+      for (const m of make.models) {
+        const year = Math.round((m.years[0] + m.years[1]) / 2);
+        const fuel = m.fuelTypes[0];
+        const w = predictPrice(artifact, {
+          manufacturer: make.name, model: m.name, year, mileage: Math.max(0, 2026 - year) * 12000,
+          fuel_type: fuel, transmission: m.transmissions[0], body_type: m.bodyTypes[0], drivetrain: m.drivetrains[0],
+          engine_size: fuel === "Electric" ? null : m.engineSizes[0] ?? null,
+        }).warnings;
+        expect(w).toEqual([]);
+      }
+    }
+  });
+});
+
+describe("forecast", () => {
+  it("reports the real age, even past the model's internal cap", () => {
+    const f = predictPrice(artifact, { ...camry, manufacturer: "Honda", model: "Civic", year: 1980, mileage: 150000 }).depreciation_forecast;
+    expect(f[0].vehicle_age).toBe(46);
+    expect(f[1].vehicle_age).toBe(47);
+  });
+});

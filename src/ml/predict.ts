@@ -2,7 +2,7 @@
  * Inference service: validated input → canonical vehicle → imputation → 3 model predictions,
  * calibrated price range and a 5-year depreciation forecast.
  */
-import type { ModelArtifact } from "./artifact";
+import type { CatalogModel, ModelArtifact } from "./artifact";
 import { predictLogAll, predictLogWith, type FittedPipeline } from "./ensemble";
 import {
   cleanText,
@@ -14,7 +14,7 @@ import {
   normalizeTransmission,
   resolveManufacturerAlias,
 } from "./normalize";
-import { imputeRecord, vehicleAge } from "./preprocess";
+import { imputeRecord } from "./preprocess";
 import { CONDITIONS, MODEL_LABELS, MODEL_NAMES, type CompleteVehicle, type ModelName, type VehicleRecord } from "./schema";
 
 export interface PredictionInput {
@@ -118,7 +118,60 @@ export function resolveVehicleIdentity(artifact: ModelArtifact, manufacturerInpu
     model: model?.name ?? modelText,
     knownManufacturer: Boolean(make),
     knownModel: Boolean(model),
+    entry: model,
   };
+}
+
+const MAX_MILES_PER_YEAR = 50_000;
+const ENGINE_TOLERANCE_L = 0.5;
+const list = (values: readonly (string | number)[]) => values.join(", ");
+
+/**
+ * flags inputs that contradict what the training data knows about this model.
+ * the estimate is still returned, but the caller is told it rests on a combination the models never saw.
+ */
+function consistencyWarnings(
+  entry: CatalogModel,
+  name: string,
+  record: VehicleRecord,
+  datasetYears: [number, number],
+  referenceYear: number,
+): string[] {
+  const out: string[] = [];
+  const [y0, y1] = entry.years;
+  const inDataset = record.year >= datasetYears[0] && record.year <= datasetYears[1];
+  if (inDataset && (record.year < y0 || record.year > y1)) {
+    out.push(`The ${name} was only seen from ${y0} to ${y1}; a ${record.year} is outside that range, so treat the estimate as an extrapolation.`);
+  }
+  const check = (field: string, value: string | null, seen: string[]) => {
+    if (value && seen.length > 0 && !seen.includes(value)) {
+      out.push(`The training data has no ${name} with ${field} "${value}" (seen: ${list(seen)}); the estimate is unreliable.`);
+    }
+  };
+  check("fuel type", record.fuel_type, entry.fuelTypes);
+  check("transmission", record.transmission, entry.transmissions);
+  check("body type", record.body_type, entry.bodyTypes);
+  check("drivetrain", record.drivetrain, entry.drivetrains);
+  const engine = record.engine_size;
+  if (record.fuel_type !== "Electric" && engine !== null && engine > 0 && entry.engineSizes.length === 0) {
+    out.push(`The training data has no ${name} with an engine (it only comes as ${list(entry.fuelTypes)}); the estimate is unreliable.`);
+  } else if (record.fuel_type !== "Electric" && engine !== null && engine > 0) {
+    const lo = Math.min(...entry.engineSizes) - ENGINE_TOLERANCE_L;
+    const hi = Math.max(...entry.engineSizes) + ENGINE_TOLERANCE_L;
+    if (engine < lo || engine > hi) {
+      out.push(`A ${engine} L engine was never seen for the ${name} (seen: ${list(entry.engineSizes)} L); the estimate is unreliable.`);
+    }
+  }
+  if (record.mileage !== null) {
+    const years = Math.max(1, referenceYear - record.year);
+    const perYear = record.mileage / years;
+    if (perYear > MAX_MILES_PER_YEAR) {
+      out.push(
+        `${Math.round(record.mileage).toLocaleString("en-US")} miles on a ${record.year} is about ${Math.round(perYear).toLocaleString("en-US")} miles a year, far above normal; check the odometer reading.`,
+      );
+    }
+  }
+  return out;
 }
 
 export function predictPrice(
@@ -165,6 +218,10 @@ export function predictPrice(
     warnings.push("Engine size is ignored for electric vehicles.");
     record.engine_size = 0;
   }
+  if (identity.entry) {
+    const name = `${identity.manufacturer} ${identity.model}`;
+    warnings.push(...consistencyWarnings(identity.entry, name, record, [minYear, maxYear], artifact.referenceYear));
+  }
 
   const fitted: FittedPipeline = { preprocessor: artifact.preprocessor, models: artifact.models };
   const { vehicle, imputed } = imputeRecord(fitted.preprocessor, record);
@@ -178,7 +235,8 @@ export function predictPrice(
 
   // What will the car be worth in the coming years if it keeps its current usage pattern?
   const years = options.forecastYears ?? 5;
-  const age = vehicleAge(artifact.referenceYear, vehicle.year);
+  // the models cap age internally; anything shown to people uses the real age
+  const age = Math.max(0, artifact.referenceYear - vehicle.year);
   const annualMiles =
     age >= 1 ? Math.min(30_000, Math.max(4_000, vehicle.mileage / age)) : artifact.preprocessor.imputation.milesPerYear;
   const depreciation_forecast: ForecastPoint[] = [];

@@ -39,27 +39,32 @@ const PRESETS: { label: string; values: Preset }[] = [
 const inputClass =
   "w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-xs outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400";
 
+// the api accepts these years; anything else in the form is blank rather than guessed
+const MIN_YEAR = 1980;
+
+/**
+ * form state for a make/model. it never invents a value: what the person entered is kept, a field is
+ * only filled when the model leaves one possible answer (an electric-only model is electric), and
+ * everything else stays blank, so it is either asked for or imputed and listed as such.
+ */
 function stateForModel(options: VehicleOptions, manufacturer: string, modelName: string, keep?: Partial<FormState>): FormState {
   const make = options.manufacturers.find((m) => m.name === manufacturer) ?? options.manufacturers[0];
   const model = make.models.find((m) => m.name === modelName) ?? make.models[0];
-  const [minYear, maxYear] = model.years;
   const keptYear = Number(keep?.year);
-  const year =
-    keep?.year && keptYear >= minYear && keptYear <= maxYear
-      ? keep.year
-      : String(Math.max(minYear, Math.min(maxYear, options.reference_year - 5)));
-  const age = Math.max(0, options.reference_year - Number(year));
+  const year = keep?.year && keptYear >= MIN_YEAR && keptYear <= options.reference_year + 1 ? keep.year : "";
+  const pick = (kept: string | undefined, seen: string[]) => (kept && seen.includes(kept) ? kept : seen.length === 1 ? seen[0] : "");
+  const fuel_type = pick(keep?.fuel_type, model.fuelTypes);
   return {
     manufacturer: make.name,
     model: model.name,
     year,
-    mileage: keep?.mileage ?? String(Math.round((age === 0 ? 3000 : age * 12000) / 1000) * 1000),
-    fuel_type: model.fuelTypes[0] ?? "Gasoline",
-    transmission: model.transmissions[0] ?? "Automatic",
+    mileage: keep?.mileage ?? "",
+    fuel_type,
+    transmission: fuel_type === "Electric" ? "Automatic" : pick(keep?.transmission, model.transmissions),
     body_type: "",
     drivetrain: "",
     engine_size: "",
-    condition: keep?.condition ?? "Good",
+    condition: keep?.condition ?? "",
     owners: keep?.owners ?? "",
     accident_history: keep?.accident_history ?? "",
     asking_price: keep?.asking_price ?? "",
@@ -92,27 +97,37 @@ function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormSta
   const make = options.manufacturers.find((m) => m.name === p.manufacturer);
   if (!make) return { form: prev, note: "Couldn't match the make to a car we know. Fill the form below instead." };
   const model = make.models.find((m) => m.name === p.model);
-  // unknown model: fall back to the most common one that fits the stated year and fuel, so they are kept
+  // unknown model: fall back to the most common one that fits the stated year and fuel, and say so
   const fits = (m: (typeof make.models)[number]) =>
     (!p.year || (p.year >= m.years[0] && p.year <= m.years[1])) && (!p.fuel_type || m.fuelTypes.includes(p.fuel_type));
-  const fallback = [...make.models].sort((a, b) => b.count - a.count).find(fits) ?? make.models[0];
-  const keep: Partial<FormState> = { asking_price: p.asking_price ? String(p.asking_price) : "" };
-  if (p.year) keep.year = String(p.year);
-  if (p.mileage != null) keep.mileage = String(p.mileage);
-  if (p.condition) keep.condition = p.condition;
-  if (p.owners) keep.owners = String(Math.min(6, p.owners));
-  if (p.accident_history != null) keep.accident_history = p.accident_history ? "yes" : "no";
-  const form = stateForModel(options, make.name, (model ?? fallback).name, keep);
+  const chosen = model ?? [...make.models].sort((a, b) => b.count - a.count).find(fits) ?? make.models[0];
+  // only what the listing states; everything else is left blank instead of guessed
+  const keep: Partial<FormState> = {
+    year: p.year ? String(p.year) : "",
+    mileage: p.mileage != null ? String(p.mileage) : "",
+    fuel_type: p.fuel_type ?? undefined,
+    transmission: p.transmission ?? undefined,
+    condition: p.condition ?? "",
+    owners: p.owners ? String(p.owners) : "",
+    accident_history: p.accident_history == null ? "" : p.accident_history ? "yes" : "no",
+    asking_price: p.asking_price ? String(p.asking_price) : "",
+  };
+  const form = stateForModel(options, make.name, chosen.name, keep);
+  // a stated value wins even when it is unusual for the model; the form flags it rather than hiding it
   if (p.fuel_type) form.fuel_type = p.fuel_type;
   if (p.transmission) form.transmission = p.transmission;
   if (p.body_type) form.body_type = p.body_type;
   if (p.drivetrain) form.drivetrain = p.drivetrain;
   if (p.engine_size != null) form.engine_size = String(p.engine_size);
   const count = p.filled.length;
-  const note = model
-    ? `Filled ${count} field${count === 1 ? "" : "s"} from your description. Check them, then run the estimate.`
-    : `Found ${make.name}, but not that model. Pick the model below and check the other fields.`;
-  return { form, note };
+  const missing = [!form.year && "model year", !form.mileage && "mileage"].filter(Boolean) as string[];
+  const head = model
+    ? `Filled ${count} field${count === 1 ? "" : "s"} from your description.`
+    : `Found ${make.name}, but not that model, so the ${chosen.name} is selected. Change it if that's wrong.`;
+  const tail = missing.length
+    ? ` The listing doesn't say the ${missing.join(" or ")}. Add ${missing.length === 1 ? "it" : "them"} below to continue.`
+    : " Check the fields, then run the estimate.";
+  return { form, note: head + tail };
 }
 
 function describeError(data: unknown): string {
@@ -193,6 +208,30 @@ export function Predictor({ options, model, aiEnabled = false }: {
     for (let y = Math.min(options.reference_year, modelInfo.years[1]); y >= modelInfo.years[0]; y--) list.push(y);
     return list;
   }, [options.reference_year, modelInfo]);
+
+  // choices the training data never saw for this model: shown next to the form, not hidden
+  const modelName = `${form.manufacturer} ${form.model}`;
+  const mismatches: string[] = [];
+  const yearNum = Number(form.year);
+  if (form.year && (yearNum < modelInfo.years[0] || yearNum > modelInfo.years[1])) {
+    mismatches.push(`${form.year}: the ${modelName} was only seen from ${modelInfo.years[0]} to ${modelInfo.years[1]}.`);
+  }
+  const flag = (label: string, value: string, seen: string[]) => {
+    if (value && seen.length > 0 && !seen.includes(value)) mismatches.push(`${label} ${value}: the ${modelName} was only seen as ${seen.join(", ")}.`);
+  };
+  flag("Fuel", form.fuel_type, modelInfo.fuelTypes);
+  flag("Transmission", form.transmission, modelInfo.transmissions);
+  flag("Body", form.body_type, modelInfo.bodyTypes);
+  flag("Drivetrain", form.drivetrain, modelInfo.drivetrains);
+  const engineNum = Number(form.engine_size);
+  if (form.fuel_type !== "Electric" && form.engine_size !== "" && engineNum > 0) {
+    if (modelInfo.engineSizes.length === 0) {
+      mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen as ${modelInfo.fuelTypes.join(", ")}, with no engine.`);
+    } else if (engineNum < Math.min(...modelInfo.engineSizes) - 0.5 || engineNum > Math.max(...modelInfo.engineSizes) + 0.5) {
+      mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen with ${modelInfo.engineSizes.join(", ")} L.`);
+    }
+  }
+  const yearOptions = form.year && !years.includes(yearNum) ? [...years, yearNum].sort((a, b) => b - a) : years;
 
   const formKey = (f: FormState) => JSON.stringify({ ...toPayload(f), asking_price: f.asking_price });
   const stale = result !== null && !loading && submittedKey !== null && submittedKey !== formKey(form);
@@ -341,9 +380,10 @@ export function Predictor({ options, model, aiEnabled = false }: {
             </select>
           </Field>
           <Field label="Model year" htmlFor="year">
-            <select id="year" className={inputClass} value={form.year} onChange={(e) => update("year", e.target.value)}>
-              {years.map((y) => (
-                <option key={y} value={y}>{y}</option>
+            <select id="year" required className={inputClass} value={form.year} onChange={(e) => update("year", e.target.value)}>
+              {form.year === "" && <option value="">Select the year</option>}
+              {yearOptions.map((y) => (
+                <option key={y} value={y}>{years.includes(y) ? y : `${y} (not in data for this model)`}</option>
               ))}
             </select>
           </Field>
@@ -362,11 +402,11 @@ export function Predictor({ options, model, aiEnabled = false }: {
             <input
               type="range"
               min={0}
-              max={300000}
+              max={Math.max(300000, Math.ceil((Number(form.mileage) || 0) / 1000) * 1000)}
               step={1000}
               aria-label="Mileage slider"
               className="mt-3 w-full accent-indigo-600"
-              value={Math.min(300000, Number(form.mileage) || 0)}
+              value={Number(form.mileage) || 0}
               onChange={(e) => update("mileage", e.target.value)}
             />
           </Field>
@@ -374,7 +414,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
             <Segmented
               value={form.fuel_type}
               onChange={(v) => setForm((prev) => ({ ...prev, fuel_type: v, ...(v === "Electric" ? { transmission: "Automatic", engine_size: "" } : {}) }))}
-              options={options.fuel_types.map((f) => ({ value: f, label: f }))}
+              options={[{ value: "", label: "Not sure" }, ...options.fuel_types.map((f) => ({ value: f, label: f }))]}
               available={modelInfo.fuelTypes}
             />
           </Field>
@@ -382,11 +422,22 @@ export function Predictor({ options, model, aiEnabled = false }: {
             <Segmented
               value={form.transmission}
               onChange={(v) => update("transmission", v)}
-              options={options.transmissions.map((t) => ({ value: t, label: t }))}
-              available={isElectric ? ["Automatic"] : undefined}
+              options={[{ value: "", label: "Not sure" }, ...options.transmissions.map((t) => ({ value: t, label: t }))]}
+              available={isElectric ? ["Automatic"] : modelInfo.transmissions}
             />
           </Field>
         </div>
+
+        {mismatches.length > 0 && (
+          <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+            <p className="font-semibold">Not seen for this model in the training data, so the estimate will be unreliable:</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              {mismatches.map((m) => (
+                <li key={m}>{m}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <details open className="group mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
           <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-slate-800">
@@ -400,7 +451,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
               <select id="body_type" className={inputClass} value={form.body_type} onChange={(e) => update("body_type", e.target.value)}>
                 <option value="">Auto ({modelInfo.bodyTypes[0] ?? "most common"})</option>
                 {options.body_types.map((b) => (
-                  <option key={b} value={b}>{b}</option>
+                  <option key={b} value={b}>{modelInfo.bodyTypes.includes(b) ? b : `${b} (not seen for this model)`}</option>
                 ))}
               </select>
             </Field>
@@ -408,7 +459,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
               <select id="drivetrain" className={inputClass} value={form.drivetrain} onChange={(e) => update("drivetrain", e.target.value)}>
                 <option value="">Auto ({modelInfo.drivetrains[0] ?? "most common"})</option>
                 {options.drivetrains.map((d) => (
-                  <option key={d} value={d}>{d}</option>
+                  <option key={d} value={d}>{modelInfo.drivetrains.includes(d) ? d : `${d} (not seen for this model)`}</option>
                 ))}
               </select>
             </Field>
@@ -429,8 +480,8 @@ export function Predictor({ options, model, aiEnabled = false }: {
             <Field label="Previous owners" htmlFor="owners">
               <select id="owners" className={inputClass} value={form.owners} onChange={(e) => update("owners", e.target.value)}>
                 <option value="">Not sure</option>
-                {[1, 2, 3, 4, 5, 6].map((n) => (
-                  <option key={n} value={n}>{n === 6 ? "6+" : n}</option>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                  <option key={n} value={n}>{n}</option>
                 ))}
               </select>
             </Field>
@@ -490,7 +541,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
             </p>
           )}
           <div className={stale ? "space-y-4 opacity-40 transition-opacity" : "space-y-4 transition-opacity"}>
-            {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} />}
+            {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} warnings={result.warnings} />}
             <ResultPanel result={result} payload={payload} loading={loading} error={error} model={model} />
           </div>
         </div>
