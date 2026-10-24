@@ -91,7 +91,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
   return {
     openapi: "3.1.0",
     info: {
-      title: "CarValue ML — Used Car Price Prediction API",
+      title: "DealCheck — Used Car Price & Deal API",
       version: "1.0.0",
       description:
         "Predicts the market price of a used car from its manufacturer, model, year, mileage, fuel type, transmission and other characteristics. Three models (Linear Regression, Random Forest, Gradient Boosting) are trained and compared; the best one by cross-validated RMSE serves the estimate.",
@@ -151,6 +151,40 @@ export function buildOpenApiSpec(serverUrl?: string) {
           },
         },
       },
+      "/api/deal": {
+        post: {
+          tags: ["Prediction"],
+          summary: "Check whether a listing's asking price is a good deal",
+          description:
+            "Same body as /api/predict plus asking_price. Returns the estimate, a rating (great, good, fair, high, overpriced) and the characteristics that move the price most.",
+          requestBody: {
+            required: true,
+            content: { "application/json": { example: { ...EXAMPLE_VEHICLE, asking_price: 24500 } } },
+          },
+          responses: {
+            "200": { description: "Estimate, deal rating and price factors" },
+            "400": { description: "Body is not valid JSON" },
+            "422": { description: "Validation error", content: { "application/json": { schema: { $ref: "#/components/schemas/ValidationError" } } } },
+          },
+        },
+      },
+      "/api/parse": {
+        post: {
+          tags: ["Prediction"],
+          summary: "Turn a plain-English listing into form fields (Gemini)",
+          description: "Uses an LLM to extract fields, then validates and normalises them. Returns 503 when no GEMINI_API_KEY is set.",
+          requestBody: {
+            required: true,
+            content: { "application/json": { example: { text: "2019 Honda Civic EX, 64k miles, automatic, clean title, one owner, asking $17,900" } } },
+          },
+          responses: {
+            "200": { description: "Extracted fields; unknown values are null" },
+            "422": { description: "Validation error" },
+            "502": { description: "The AI answer could not be used" },
+            "503": { description: "Plain-English input not configured" },
+          },
+        },
+      },
       "/api/model": {
         get: {
           tags: ["Model"],
@@ -176,7 +210,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
       "/api/health": {
         get: {
           tags: ["Monitoring"],
-          summary: "Liveness/readiness: database connectivity and loaded model version",
+          summary: "Liveness/readiness: loaded model version and database status (optional)",
           responses: { "200": { description: "Healthy" }, "500": { description: "Unhealthy" } },
         },
       },

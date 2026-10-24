@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { VehicleOptions } from "@/lib/model-store";
 import type { RecentPredictions } from "@/lib/prediction-log";
+import type { DealCheckResult } from "@/lib/deal-check";
+import type { ParsedListing } from "@/lib/parse-listing";
 import type { PredictionResult } from "@/ml/predict";
+import { DealCard } from "./deal-card";
 import { RecentPredictionsTable } from "./recent-predictions";
 import { ResultPanel } from "./result-panel";
 
@@ -22,6 +25,7 @@ interface FormState {
   condition: string;
   owners: string;
   accident_history: TriState;
+  asking_price: string;
 }
 
 type Preset = Partial<FormState> & { manufacturer: string; model: string };
@@ -60,6 +64,7 @@ function stateForModel(options: VehicleOptions, manufacturer: string, modelName:
     condition: keep?.condition ?? "Good",
     owners: keep?.owners ?? "",
     accident_history: keep?.accident_history ?? "",
+    asking_price: keep?.asking_price ?? "",
   };
 }
 
@@ -82,6 +87,30 @@ function toPayload(form: FormState): Record<string, unknown> {
     owners: form.owners === "" ? null : Number(form.owners),
     accident_history: form.accident_history === "" ? null : form.accident_history === "yes",
   };
+}
+
+/** maps fields the ai extracted onto the form; only known makes/models are applied */
+function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormState): { form: FormState; note: string } {
+  const make = options.manufacturers.find((m) => m.name === p.manufacturer);
+  if (!make) return { form: prev, note: "Couldn't match the make to a car we know. Fill the form below instead." };
+  const model = make.models.find((m) => m.name === p.model);
+  const keep: Partial<FormState> = { asking_price: p.asking_price ? String(p.asking_price) : "" };
+  if (p.year) keep.year = String(p.year);
+  if (p.mileage != null) keep.mileage = String(p.mileage);
+  if (p.condition) keep.condition = p.condition;
+  if (p.owners) keep.owners = String(Math.min(6, p.owners));
+  if (p.accident_history != null) keep.accident_history = p.accident_history ? "yes" : "no";
+  const form = stateForModel(options, make.name, model?.name ?? make.models[0].name, keep);
+  if (p.fuel_type) form.fuel_type = p.fuel_type;
+  if (p.transmission) form.transmission = p.transmission;
+  if (p.body_type) form.body_type = p.body_type;
+  if (p.drivetrain) form.drivetrain = p.drivetrain;
+  if (p.engine_size != null) form.engine_size = String(p.engine_size);
+  const count = p.filled.length;
+  const note = model
+    ? `Filled ${count} field${count === 1 ? "" : "s"} from your description. Check them, then run the estimate.`
+    : `Found ${make.name}, but not that model. Pick the model below and check the other fields.`;
+  return { form, note };
 }
 
 function describeError(data: unknown): string {
@@ -135,14 +164,22 @@ function Segmented({ value, onChange, options, available }: {
   );
 }
 
-export function Predictor({ options, model }: { options: VehicleOptions; model: { label: string; r2: number; mape: number } }) {
+export function Predictor({ options, model, aiEnabled = false }: {
+  options: VehicleOptions;
+  model: { label: string; r2: number; mape: number };
+  aiEnabled?: boolean;
+}) {
   const [form, setForm] = useState<FormState>(() => applyPreset(options, PRESETS[0].values));
   const [result, setResult] = useState<PredictionResult | null>(null);
+  const [deal, setDeal] = useState<Omit<DealCheckResult, "prediction"> | null>(null);
   const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<RecentPredictions | null>(null);
   const [recentLoading, setRecentLoading] = useState(true);
+  const [listingText, setListingText] = useState("");
+  const [parsing, setParsing] = useState(false);
+  const [parseNote, setParseNote] = useState<string | null>(null);
 
   const make = useMemo(
     () => options.manufacturers.find((m) => m.name === form.manufacturer) ?? options.manufacturers[0],
@@ -173,23 +210,57 @@ export function Predictor({ options, model }: { options: VehicleOptions; model: 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((prev) => ({ ...prev, [key]: value }));
   const isElectric = form.fuel_type === "Electric";
 
+  async function fillFromText() {
+    setParsing(true);
+    setParseNote(null);
+    try {
+      const response = await fetch("/api/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: listingText }),
+      });
+      const data: unknown = await response.json();
+      if (!response.ok) {
+        setParseNote(`${describeError(data)}. You can still fill the form below.`);
+        return;
+      }
+      const { form: next, note } = formFromParsed(options, data as ParsedListing, form);
+      setForm(next);
+      setParseNote(note);
+    } catch {
+      setParseNote("Network error. You can still fill the form below.");
+    } finally {
+      setParsing(false);
+    }
+  }
+
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     setLoading(true);
     setError(null);
     const body = toPayload(form);
+    const asking = Number(form.asking_price);
+    const withDeal = form.asking_price !== "" && asking > 0;
     try {
-      const response = await fetch("/api/predict", {
+      // with an asking price we call the deal check, otherwise just the price estimate
+      const response = await fetch(withDeal ? "/api/deal" : "/api/predict", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-client": "web" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(withDeal ? { ...body, asking_price: asking } : body),
       });
       const data: unknown = await response.json();
       if (!response.ok) {
         setError(describeError(data));
         return;
       }
-      setResult(data as PredictionResult);
+      if (withDeal) {
+        const { prediction, ...rest } = data as DealCheckResult;
+        setResult(prediction);
+        setDeal(rest);
+      } else {
+        setResult(data as PredictionResult);
+        setDeal(null);
+      }
       setPayload(body);
       void refreshRecent();
     } catch {
@@ -208,6 +279,34 @@ export function Predictor({ options, model }: { options: VehicleOptions; model: 
             <p className="mt-1 text-sm text-slate-500">The six core inputs are required — everything else is optional and imputed if unknown.</p>
           </div>
         </div>
+
+        {aiEnabled && (
+          <div className="mt-5 rounded-2xl border border-violet-200 bg-violet-50/60 p-4">
+            <label htmlFor="listing_text" className="text-sm font-medium text-slate-700">
+              Describe the car or paste a listing <span className="font-normal text-slate-500">— AI fills the form</span>
+            </label>
+            <textarea
+              id="listing_text"
+              rows={2}
+              maxLength={2000}
+              className={`${inputClass} mt-2 resize-y`}
+              placeholder="e.g. 2019 Honda Civic EX, 64k miles, automatic, one owner, no accidents, asking $17,900"
+              value={listingText}
+              onChange={(e) => setListingText(e.target.value)}
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void fillFromText()}
+                disabled={parsing || listingText.trim().length < 5}
+                className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {parsing ? "Reading…" : "Fill the form"}
+              </button>
+              {parseNote && <p className="text-sm text-slate-600" role="status">{parseNote}</p>}
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap gap-2">
           <span className="self-center text-xs font-medium text-slate-400">Try:</span>
@@ -366,18 +465,35 @@ export function Predictor({ options, model }: { options: VehicleOptions; model: 
           </div>
         </details>
 
+        <div className="mt-6 rounded-2xl border border-indigo-200 bg-indigo-50/60 p-4 sm:p-5">
+          <Field label="Asking price" htmlFor="asking_price" hint="optional · USD">
+            <input
+              id="asking_price"
+              type="number"
+              min={1}
+              step={50}
+              inputMode="numeric"
+              placeholder="e.g. 18500 — add it to check if the listing is a good deal"
+              className={inputClass}
+              value={form.asking_price}
+              onChange={(e) => update("asking_price", e.target.value)}
+            />
+          </Field>
+        </div>
+
         <button
           type="submit"
           disabled={loading}
           className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-6 py-3.5 text-base font-semibold text-white shadow-lg shadow-indigo-600/25 transition hover:bg-indigo-500 focus:outline-none focus:ring-4 focus:ring-indigo-200 disabled:cursor-wait disabled:opacity-70"
         >
           {loading && <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />}
-          {loading ? "Estimating…" : "Estimate price"}
+          {loading ? "Estimating…" : form.asking_price ? "Check this deal" : "Estimate price"}
         </button>
       </form>
 
       <div className="lg:col-span-5">
-        <div className="lg:sticky lg:top-20">
+        <div className="space-y-4 lg:sticky lg:top-20">
+          {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} />}
           <ResultPanel result={result} payload={payload} loading={loading} error={error} model={model} />
         </div>
       </div>

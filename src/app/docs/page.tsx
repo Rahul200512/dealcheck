@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Badge, Card, CodeBlock } from "@/components/ui";
 import { getModelArtifact, getModelSummary } from "@/lib/model-store";
 import { buildOpenApiSpec, EXAMPLE_VEHICLE } from "@/lib/openapi";
+import { checkDeal } from "@/lib/deal-check";
 import { predictPrice } from "@/ml/predict";
 
 export const metadata: Metadata = { title: "API docs" };
@@ -25,6 +26,7 @@ export default function DocsPage() {
   const artifact = getModelArtifact();
   const summary = getModelSummary(artifact);
   const example = predictPrice(artifact, EXAMPLE_VEHICLE);
+  const dealExample = checkDeal(artifact, EXAMPLE_VEHICLE, Math.round(example.estimated_price * 1.08));
   const spec = buildOpenApiSpec();
   const schema = spec.components.schemas.VehicleInput;
   const properties = schema.properties as Record<string, PropertySpec>;
@@ -32,6 +34,23 @@ export default function DocsPage() {
   const minimal = { manufacturer: "Ford", model: "F-150", year: 2015, mileage: 120000 };
 
   const endpoints = [
+    {
+      method: "POST",
+      path: "/api/deal",
+      title: "Check whether a listing is a good deal",
+      description:
+        "Same body as /api/predict plus asking_price. Returns the estimate, a rating (great, good, fair, high, overpriced), a plain summary and the characteristics that move the price most.",
+      request: JSON.stringify({ ...EXAMPLE_VEHICLE, asking_price: dealExample.deal.asking_price }, null, 2),
+      response: JSON.stringify({ prediction: { estimated_price: example.estimated_price, "...": "…" }, deal: dealExample.deal, factors: dealExample.factors }, null, 2),
+    },
+    {
+      method: "POST",
+      path: "/api/parse",
+      title: "Plain-English listing → form fields",
+      description:
+        "Gemini extracts the fields as JSON; the server validates them with Zod and maps them to known makes, models and categories. Unknown values come back as null. Returns 503 when GEMINI_API_KEY is not set.",
+      request: JSON.stringify({ text: "2019 Honda Civic EX, 64k miles, automatic, one owner, no accidents, asking $17,900" }, null, 2),
+    },
     {
       method: "POST",
       path: "/api/predict",
@@ -70,14 +89,14 @@ export default function DocsPage() {
       method: "GET",
       path: "/api/predictions?limit=10",
       title: "Recent predictions (monitoring)",
-      description: "Most recent requests logged in PostgreSQL with totals — useful for monitoring usage and input drift.",
+      description: "Most recent requests logged in Postgres with totals, when DATABASE_URL is set; empty otherwise.",
     },
     {
       method: "GET",
       path: "/api/health",
       title: "Health check",
-      description: "Returns 200 when the database is reachable and the model artifact is loaded.",
-      response: JSON.stringify({ ok: true, database: true, model: { version: summary.version, best_model: summary.best_model } }, null, 2),
+      description: "Returns 200 when the model artifact is loaded and the database (if configured) is reachable.",
+      response: JSON.stringify({ ok: true, database: "not_configured", model: { version: summary.version, best_model: summary.best_model } }, null, 2),
     },
     {
       method: "GET",

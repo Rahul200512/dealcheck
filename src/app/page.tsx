@@ -17,7 +17,7 @@ const STEPS = [
   },
   {
     title: "3 · Prediction API",
-    text: "A validated REST API (single & batch) serves the saved model artifact, returns calibrated price ranges and logs every request to PostgreSQL.",
+    text: "A validated REST API (single & batch) serves the saved model artifact, returns calibrated price ranges and, when a database is configured, logs every request.",
     href: "/docs",
   },
   {
@@ -47,13 +47,13 @@ export default function HomePage() {
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Model {summary.version} · {best.label}
             </span>
             <h1 className="mt-5 text-4xl font-semibold tracking-tight sm:text-6xl">
-              What is your used car{" "}
-              <span className="bg-linear-to-r from-indigo-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent">really worth?</span>
+              Is that used car{" "}
+              <span className="bg-linear-to-r from-indigo-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent">a good deal?</span>
             </h1>
             <p className="mt-5 text-lg leading-relaxed text-slate-300">
-              Instant market-price estimates from machine-learning models trained on{" "}
+              Paste a listing or enter the details, add the asking price, and get a fair-price estimate, a deal rating and the reasons behind it — from machine-learning models trained on{" "}
               {formatNumber(summary.dataset.cleanRows)} cleaned listings across {summary.dataset.manufacturers} manufacturers and{" "}
-              {summary.dataset.models} models — with a calibrated price range and a 5-year value forecast.
+              {summary.dataset.models} models.
             </p>
           </div>
           <dl className="mt-10 grid max-w-4xl grid-cols-2 gap-3 sm:grid-cols-4">
@@ -66,7 +66,11 @@ export default function HomePage() {
       </section>
 
       <section className="relative mx-auto -mt-24 max-w-7xl px-4 sm:px-6">
-        <Predictor options={options} model={{ label: best.label, r2: best.test.r2, mape: best.test.mape }} />
+        <Predictor
+          options={options}
+          model={{ label: best.label, r2: best.test.r2, mape: best.test.mape }}
+          aiEnabled={Boolean(process.env.GEMINI_API_KEY)}
+        />
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6">

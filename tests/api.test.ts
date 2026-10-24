@@ -11,6 +11,8 @@ import { GET as getOpenApi } from "@/app/api/openapi/route";
 import { GET as getOptions } from "@/app/api/options/route";
 import { POST as predictBatch } from "@/app/api/predict/batch/route";
 import { POST as predict } from "@/app/api/predict/route";
+import { POST as deal } from "@/app/api/deal/route";
+import { POST as parse } from "@/app/api/parse/route";
 import { recordPredictions } from "@/lib/prediction-log";
 
 const post = (url: string, body: unknown) =>
@@ -110,5 +112,40 @@ describe("GET endpoints", () => {
     const body = (await getOpenApi(new Request("http://localhost/api/openapi")).json()) as { openapi: string; paths: Record<string, unknown> };
     expect(body.openapi).toBe("3.1.0");
     expect(Object.keys(body.paths)).toEqual(expect.arrayContaining(["/api/predict", "/api/predict/batch", "/api/model"]));
+  });
+});
+
+describe("POST /api/deal", () => {
+  const civic = { manufacturer: "Honda", model: "Civic", year: 2018, mileage: 70000, fuel_type: "Gasoline", transmission: "Automatic" };
+
+  it("returns the estimate, a deal rating and price factors", async () => {
+    const res = await deal(post("/api/deal", { ...civic, asking_price: 15000, accident_history: true }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      prediction: PredictBody;
+      deal: { rating: string; asking_price: number; fair_price: number };
+      factors: { factor: string; impact: number }[];
+    };
+    expect(body.deal.asking_price).toBe(15000);
+    expect(body.deal.fair_price).toBe(body.prediction.estimated_price);
+    expect(["great", "good", "fair", "high", "overpriced"]).toContain(body.deal.rating);
+    expect(body.factors.find((f) => f.factor === "accident history")?.impact).toBeLessThan(0);
+  });
+
+  it("requires a positive asking price", async () => {
+    const res = await deal(post("/api/deal", { ...civic, asking_price: 0 }));
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.details.map((d) => d.field)).toContain("asking_price");
+  });
+});
+
+describe("POST /api/parse", () => {
+  it("reports 503 when no ai key is configured", async () => {
+    const saved = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    const res = await parse(post("/api/parse", { text: "2016 Toyota Camry, 90k miles, $11,500" }));
+    expect(res.status).toBe(503);
+    if (saved !== undefined) process.env.GEMINI_API_KEY = saved;
   });
 });
