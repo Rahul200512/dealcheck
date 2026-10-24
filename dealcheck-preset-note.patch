@@ -1,0 +1,435 @@
+diff --git a/src/components/predictor/deal-card.tsx b/src/components/predictor/deal-card.tsx
+index 4a658a0..51a1c6d 100644
+--- a/src/components/predictor/deal-card.tsx
++++ b/src/components/predictor/deal-card.tsx
+@@ -11,7 +11,7 @@ const TONES: Record<DealRating, { box: string; badge: string }> = {
+   overpriced: { box: "border-rose-200 bg-rose-50", badge: "bg-rose-600 text-white" },
+ };
+ 
+-export function DealCard({ deal, factors }: { deal: DealVerdict; factors: PriceFactor[] }) {
++export function DealCard({ deal, factors, warnings = [] }: { deal: DealVerdict; factors: PriceFactor[]; warnings?: string[] }) {
+   // a suspiciously low price is a warning, not a win
+   const tone = deal.too_good_to_be_true ? TONES.high : TONES[deal.rating];
+   const label = deal.too_good_to_be_true ? "Suspiciously low" : deal.label;
+@@ -25,6 +25,16 @@ export function DealCard({ deal, factors }: { deal: DealVerdict; factors: PriceF
+         </span>
+       </div>
+       <p className="mt-3 text-sm text-slate-700">{deal.summary}</p>
++      {warnings.length > 0 && (
++        <div className="mt-3 rounded-xl border border-amber-300 bg-white/70 px-3 py-2 text-sm text-amber-900" role="note">
++          <p className="font-semibold">Treat this rating with caution</p>
++          <ul className="mt-1 list-disc space-y-1 pl-5">
++            {warnings.map((w) => (
++              <li key={w}>{w}</li>
++            ))}
++          </ul>
++        </div>
++      )}
+       {deal.too_good_to_be_true && (
+         <p className="mt-3 rounded-xl bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900" role="alert">
+           Price looks too good to be true. Ask for a vehicle history report first.
+diff --git a/src/components/predictor/predictor.tsx b/src/components/predictor/predictor.tsx
+index c67aa52..ef8fd7b 100644
+--- a/src/components/predictor/predictor.tsx
++++ b/src/components/predictor/predictor.tsx
+@@ -39,27 +39,32 @@ const PRESETS: { label: string; values: Preset }[] = [
+ const inputClass =
+   "w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-xs outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400";
+ 
++// the api accepts these years; anything else in the form is blank rather than guessed
++const MIN_YEAR = 1980;
++
++/**
++ * form state for a make/model. it never invents a value: what the person entered is kept, a field is
++ * only filled when the model leaves one possible answer (an electric-only model is electric), and
++ * everything else stays blank, so it is either asked for or imputed and listed as such.
++ */
+ function stateForModel(options: VehicleOptions, manufacturer: string, modelName: string, keep?: Partial<FormState>): FormState {
+   const make = options.manufacturers.find((m) => m.name === manufacturer) ?? options.manufacturers[0];
+   const model = make.models.find((m) => m.name === modelName) ?? make.models[0];
+-  const [minYear, maxYear] = model.years;
+   const keptYear = Number(keep?.year);
+-  const year =
+-    keep?.year && keptYear >= minYear && keptYear <= maxYear
+-      ? keep.year
+-      : String(Math.max(minYear, Math.min(maxYear, options.reference_year - 5)));
+-  const age = Math.max(0, options.reference_year - Number(year));
++  const year = keep?.year && keptYear >= MIN_YEAR && keptYear <= options.reference_year + 1 ? keep.year : "";
++  const pick = (kept: string | undefined, seen: string[]) => (kept && seen.includes(kept) ? kept : seen.length === 1 ? seen[0] : "");
++  const fuel_type = pick(keep?.fuel_type, model.fuelTypes);
+   return {
+     manufacturer: make.name,
+     model: model.name,
+     year,
+-    mileage: keep?.mileage ?? String(Math.round((age === 0 ? 3000 : age * 12000) / 1000) * 1000),
+-    fuel_type: model.fuelTypes[0] ?? "Gasoline",
+-    transmission: model.transmissions[0] ?? "Automatic",
++    mileage: keep?.mileage ?? "",
++    fuel_type,
++    transmission: fuel_type === "Electric" ? "Automatic" : pick(keep?.transmission, model.transmissions),
+     body_type: "",
+     drivetrain: "",
+     engine_size: "",
+-    condition: keep?.condition ?? "Good",
++    condition: keep?.condition ?? "",
+     owners: keep?.owners ?? "",
+     accident_history: keep?.accident_history ?? "",
+     asking_price: keep?.asking_price ?? "",
+@@ -92,27 +97,37 @@ function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormSta
+   const make = options.manufacturers.find((m) => m.name === p.manufacturer);
+   if (!make) return { form: prev, note: "Couldn't match the make to a car we know. Fill the form below instead." };
+   const model = make.models.find((m) => m.name === p.model);
+-  // unknown model: fall back to the most common one that fits the stated year and fuel, so they are kept
++  // unknown model: fall back to the most common one that fits the stated year and fuel, and say so
+   const fits = (m: (typeof make.models)[number]) =>
+     (!p.year || (p.year >= m.years[0] && p.year <= m.years[1])) && (!p.fuel_type || m.fuelTypes.includes(p.fuel_type));
+-  const fallback = [...make.models].sort((a, b) => b.count - a.count).find(fits) ?? make.models[0];
+-  const keep: Partial<FormState> = { asking_price: p.asking_price ? String(p.asking_price) : "" };
+-  if (p.year) keep.year = String(p.year);
+-  if (p.mileage != null) keep.mileage = String(p.mileage);
+-  if (p.condition) keep.condition = p.condition;
+-  if (p.owners) keep.owners = String(Math.min(6, p.owners));
+-  if (p.accident_history != null) keep.accident_history = p.accident_history ? "yes" : "no";
+-  const form = stateForModel(options, make.name, (model ?? fallback).name, keep);
++  const chosen = model ?? [...make.models].sort((a, b) => b.count - a.count).find(fits) ?? make.models[0];
++  // only what the listing states; everything else is left blank instead of guessed
++  const keep: Partial<FormState> = {
++    year: p.year ? String(p.year) : "",
++    mileage: p.mileage != null ? String(p.mileage) : "",
++    fuel_type: p.fuel_type ?? undefined,
++    transmission: p.transmission ?? undefined,
++    condition: p.condition ?? "",
++    owners: p.owners ? String(p.owners) : "",
++    accident_history: p.accident_history == null ? "" : p.accident_history ? "yes" : "no",
++    asking_price: p.asking_price ? String(p.asking_price) : "",
++  };
++  const form = stateForModel(options, make.name, chosen.name, keep);
++  // a stated value wins even when it is unusual for the model; the form flags it rather than hiding it
+   if (p.fuel_type) form.fuel_type = p.fuel_type;
+   if (p.transmission) form.transmission = p.transmission;
+   if (p.body_type) form.body_type = p.body_type;
+   if (p.drivetrain) form.drivetrain = p.drivetrain;
+   if (p.engine_size != null) form.engine_size = String(p.engine_size);
+   const count = p.filled.length;
+-  const note = model
+-    ? `Filled ${count} field${count === 1 ? "" : "s"} from your description. Check them, then run the estimate.`
+-    : `Found ${make.name}, but not that model. Pick the model below and check the other fields.`;
+-  return { form, note };
++  const missing = [!form.year && "model year", !form.mileage && "mileage"].filter(Boolean) as string[];
++  const head = model
++    ? `Filled ${count} field${count === 1 ? "" : "s"} from your description.`
++    : `Found ${make.name}, but not that model, so the ${chosen.name} is selected. Change it if that's wrong.`;
++  const tail = missing.length
++    ? ` The listing doesn't say the ${missing.join(" or ")}. Add ${missing.length === 1 ? "it" : "them"} below to continue.`
++    : " Check the fields, then run the estimate.";
++  return { form, note: head + tail };
+ }
+ 
+ function describeError(data: unknown): string {
+@@ -194,6 +209,30 @@ export function Predictor({ options, model, aiEnabled = false }: {
+     return list;
+   }, [options.reference_year, modelInfo]);
+ 
++  // choices the training data never saw for this model: shown next to the form, not hidden
++  const modelName = `${form.manufacturer} ${form.model}`;
++  const mismatches: string[] = [];
++  const yearNum = Number(form.year);
++  if (form.year && (yearNum < modelInfo.years[0] || yearNum > modelInfo.years[1])) {
++    mismatches.push(`${form.year}: the ${modelName} was only seen from ${modelInfo.years[0]} to ${modelInfo.years[1]}.`);
++  }
++  const flag = (label: string, value: string, seen: string[]) => {
++    if (value && seen.length > 0 && !seen.includes(value)) mismatches.push(`${label} ${value}: the ${modelName} was only seen as ${seen.join(", ")}.`);
++  };
++  flag("Fuel", form.fuel_type, modelInfo.fuelTypes);
++  flag("Transmission", form.transmission, modelInfo.transmissions);
++  flag("Body", form.body_type, modelInfo.bodyTypes);
++  flag("Drivetrain", form.drivetrain, modelInfo.drivetrains);
++  const engineNum = Number(form.engine_size);
++  if (form.fuel_type !== "Electric" && form.engine_size !== "" && engineNum > 0) {
++    if (modelInfo.engineSizes.length === 0) {
++      mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen as ${modelInfo.fuelTypes.join(", ")}, with no engine.`);
++    } else if (engineNum < Math.min(...modelInfo.engineSizes) - 0.5 || engineNum > Math.max(...modelInfo.engineSizes) + 0.5) {
++      mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen with ${modelInfo.engineSizes.join(", ")} L.`);
++    }
++  }
++  const yearOptions = form.year && !years.includes(yearNum) ? [...years, yearNum].sort((a, b) => b - a) : years;
++
+   const formKey = (f: FormState) => JSON.stringify({ ...toPayload(f), asking_price: f.asking_price });
+   const stale = result !== null && !loading && submittedKey !== null && submittedKey !== formKey(form);
+ 
+@@ -304,7 +343,10 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             <button
+               key={preset.label}
+               type="button"
+-              onClick={() => setForm(applyPreset(options, preset.values))}
++              onClick={() => {
++                setForm(applyPreset(options, preset.values));
++                setParseNote(null); // the ai note described the previous form, not this preset
++              }}
+               className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
+             >
+               {preset.label}
+@@ -341,9 +383,10 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             </select>
+           </Field>
+           <Field label="Model year" htmlFor="year">
+-            <select id="year" className={inputClass} value={form.year} onChange={(e) => update("year", e.target.value)}>
+-              {years.map((y) => (
+-                <option key={y} value={y}>{y}</option>
++            <select id="year" required className={inputClass} value={form.year} onChange={(e) => update("year", e.target.value)}>
++              {form.year === "" && <option value="">Select the year</option>}
++              {yearOptions.map((y) => (
++                <option key={y} value={y}>{years.includes(y) ? y : `${y} (not in data for this model)`}</option>
+               ))}
+             </select>
+           </Field>
+@@ -362,11 +405,11 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             <input
+               type="range"
+               min={0}
+-              max={300000}
++              max={Math.max(300000, Math.ceil((Number(form.mileage) || 0) / 1000) * 1000)}
+               step={1000}
+               aria-label="Mileage slider"
+               className="mt-3 w-full accent-indigo-600"
+-              value={Math.min(300000, Number(form.mileage) || 0)}
++              value={Number(form.mileage) || 0}
+               onChange={(e) => update("mileage", e.target.value)}
+             />
+           </Field>
+@@ -374,7 +417,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             <Segmented
+               value={form.fuel_type}
+               onChange={(v) => setForm((prev) => ({ ...prev, fuel_type: v, ...(v === "Electric" ? { transmission: "Automatic", engine_size: "" } : {}) }))}
+-              options={options.fuel_types.map((f) => ({ value: f, label: f }))}
++              options={[{ value: "", label: "Not sure" }, ...options.fuel_types.map((f) => ({ value: f, label: f }))]}
+               available={modelInfo.fuelTypes}
+             />
+           </Field>
+@@ -382,12 +425,23 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             <Segmented
+               value={form.transmission}
+               onChange={(v) => update("transmission", v)}
+-              options={options.transmissions.map((t) => ({ value: t, label: t }))}
+-              available={isElectric ? ["Automatic"] : undefined}
++              options={[{ value: "", label: "Not sure" }, ...options.transmissions.map((t) => ({ value: t, label: t }))]}
++              available={isElectric ? ["Automatic"] : modelInfo.transmissions}
+             />
+           </Field>
+         </div>
+ 
++        {mismatches.length > 0 && (
++          <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
++            <p className="font-semibold">Not seen for this model in the training data, so the estimate will be unreliable:</p>
++            <ul className="mt-1 list-disc space-y-0.5 pl-5">
++              {mismatches.map((m) => (
++                <li key={m}>{m}</li>
++              ))}
++            </ul>
++          </div>
++        )}
++
+         <details open className="group mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
+           <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-slate-800">
+             <span>
+@@ -400,7 +454,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
+               <select id="body_type" className={inputClass} value={form.body_type} onChange={(e) => update("body_type", e.target.value)}>
+                 <option value="">Auto ({modelInfo.bodyTypes[0] ?? "most common"})</option>
+                 {options.body_types.map((b) => (
+-                  <option key={b} value={b}>{b}</option>
++                  <option key={b} value={b}>{modelInfo.bodyTypes.includes(b) ? b : `${b} (not seen for this model)`}</option>
+                 ))}
+               </select>
+             </Field>
+@@ -408,7 +462,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
+               <select id="drivetrain" className={inputClass} value={form.drivetrain} onChange={(e) => update("drivetrain", e.target.value)}>
+                 <option value="">Auto ({modelInfo.drivetrains[0] ?? "most common"})</option>
+                 {options.drivetrains.map((d) => (
+-                  <option key={d} value={d}>{d}</option>
++                  <option key={d} value={d}>{modelInfo.drivetrains.includes(d) ? d : `${d} (not seen for this model)`}</option>
+                 ))}
+               </select>
+             </Field>
+@@ -429,8 +483,8 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             <Field label="Previous owners" htmlFor="owners">
+               <select id="owners" className={inputClass} value={form.owners} onChange={(e) => update("owners", e.target.value)}>
+                 <option value="">Not sure</option>
+-                {[1, 2, 3, 4, 5, 6].map((n) => (
+-                  <option key={n} value={n}>{n === 6 ? "6+" : n}</option>
++                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
++                  <option key={n} value={n}>{n}</option>
+                 ))}
+               </select>
+             </Field>
+@@ -490,7 +544,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
+             </p>
+           )}
+           <div className={stale ? "space-y-4 opacity-40 transition-opacity" : "space-y-4 transition-opacity"}>
+-            {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} />}
++            {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} warnings={result.warnings} />}
+             <ResultPanel result={result} payload={payload} loading={loading} error={error} model={model} />
+           </div>
+         </div>
+diff --git a/src/ml/predict.ts b/src/ml/predict.ts
+index c3e651f..cbaf11b 100644
+--- a/src/ml/predict.ts
++++ b/src/ml/predict.ts
+@@ -2,7 +2,7 @@
+  * Inference service: validated input → canonical vehicle → imputation → 3 model predictions,
+  * calibrated price range and a 5-year depreciation forecast.
+  */
+-import type { ModelArtifact } from "./artifact";
++import type { CatalogModel, ModelArtifact } from "./artifact";
+ import { predictLogAll, predictLogWith, type FittedPipeline } from "./ensemble";
+ import {
+   cleanText,
+@@ -14,7 +14,7 @@ import {
+   normalizeTransmission,
+   resolveManufacturerAlias,
+ } from "./normalize";
+-import { imputeRecord, vehicleAge } from "./preprocess";
++import { imputeRecord } from "./preprocess";
+ import { CONDITIONS, MODEL_LABELS, MODEL_NAMES, type CompleteVehicle, type ModelName, type VehicleRecord } from "./schema";
+ 
+ export interface PredictionInput {
+@@ -118,9 +118,62 @@ export function resolveVehicleIdentity(artifact: ModelArtifact, manufacturerInpu
+     model: model?.name ?? modelText,
+     knownManufacturer: Boolean(make),
+     knownModel: Boolean(model),
++    entry: model,
+   };
+ }
+ 
++const MAX_MILES_PER_YEAR = 50_000;
++const ENGINE_TOLERANCE_L = 0.5;
++const list = (values: readonly (string | number)[]) => values.join(", ");
++
++/**
++ * flags inputs that contradict what the training data knows about this model.
++ * the estimate is still returned, but the caller is told it rests on a combination the models never saw.
++ */
++function consistencyWarnings(
++  entry: CatalogModel,
++  name: string,
++  record: VehicleRecord,
++  datasetYears: [number, number],
++  referenceYear: number,
++): string[] {
++  const out: string[] = [];
++  const [y0, y1] = entry.years;
++  const inDataset = record.year >= datasetYears[0] && record.year <= datasetYears[1];
++  if (inDataset && (record.year < y0 || record.year > y1)) {
++    out.push(`The ${name} was only seen from ${y0} to ${y1}; a ${record.year} is outside that range, so treat the estimate as an extrapolation.`);
++  }
++  const check = (field: string, value: string | null, seen: string[]) => {
++    if (value && seen.length > 0 && !seen.includes(value)) {
++      out.push(`The training data has no ${name} with ${field} "${value}" (seen: ${list(seen)}); the estimate is unreliable.`);
++    }
++  };
++  check("fuel type", record.fuel_type, entry.fuelTypes);
++  check("transmission", record.transmission, entry.transmissions);
++  check("body type", record.body_type, entry.bodyTypes);
++  check("drivetrain", record.drivetrain, entry.drivetrains);
++  const engine = record.engine_size;
++  if (record.fuel_type !== "Electric" && engine !== null && engine > 0 && entry.engineSizes.length === 0) {
++    out.push(`The training data has no ${name} with an engine (it only comes as ${list(entry.fuelTypes)}); the estimate is unreliable.`);
++  } else if (record.fuel_type !== "Electric" && engine !== null && engine > 0) {
++    const lo = Math.min(...entry.engineSizes) - ENGINE_TOLERANCE_L;
++    const hi = Math.max(...entry.engineSizes) + ENGINE_TOLERANCE_L;
++    if (engine < lo || engine > hi) {
++      out.push(`A ${engine} L engine was never seen for the ${name} (seen: ${list(entry.engineSizes)} L); the estimate is unreliable.`);
++    }
++  }
++  if (record.mileage !== null) {
++    const years = Math.max(1, referenceYear - record.year);
++    const perYear = record.mileage / years;
++    if (perYear > MAX_MILES_PER_YEAR) {
++      out.push(
++        `${Math.round(record.mileage).toLocaleString("en-US")} miles on a ${record.year} is about ${Math.round(perYear).toLocaleString("en-US")} miles a year, far above normal; check the odometer reading.`,
++      );
++    }
++  }
++  return out;
++}
++
+ export function predictPrice(
+   artifact: ModelArtifact,
+   input: PredictionInput,
+@@ -165,6 +218,10 @@ export function predictPrice(
+     warnings.push("Engine size is ignored for electric vehicles.");
+     record.engine_size = 0;
+   }
++  if (identity.entry) {
++    const name = `${identity.manufacturer} ${identity.model}`;
++    warnings.push(...consistencyWarnings(identity.entry, name, record, [minYear, maxYear], artifact.referenceYear));
++  }
+ 
+   const fitted: FittedPipeline = { preprocessor: artifact.preprocessor, models: artifact.models };
+   const { vehicle, imputed } = imputeRecord(fitted.preprocessor, record);
+@@ -178,7 +235,8 @@ export function predictPrice(
+ 
+   // What will the car be worth in the coming years if it keeps its current usage pattern?
+   const years = options.forecastYears ?? 5;
+-  const age = vehicleAge(artifact.referenceYear, vehicle.year);
++  // the models cap age internally; anything shown to people uses the real age
++  const age = Math.max(0, artifact.referenceYear - vehicle.year);
+   const annualMiles =
+     age >= 1 ? Math.min(30_000, Math.max(4_000, vehicle.mileage / age)) : artifact.preprocessor.imputation.milesPerYear;
+   const depreciation_forecast: ForecastPoint[] = [];
+diff --git a/tests/predict.test.ts b/tests/predict.test.ts
+index d9222ab..069649b 100644
+--- a/tests/predict.test.ts
++++ b/tests/predict.test.ts
+@@ -135,3 +135,52 @@ describe("condition", () => {
+     }
+   });
+ });
++
++describe("inputs that contradict the training data", () => {
++  const warningsFor = (input: PredictionInput) => predictPrice(artifact, input).warnings.join(" | ");
++
++  it("flags fuel, transmission and an engine on an electric-only model", () => {
++    const w = warningsFor({ manufacturer: "Tesla", model: "Model 3", year: 2022, mileage: 28000, fuel_type: "Gasoline", transmission: "Manual", engine_size: 5 });
++    expect(w).toMatch(/fuel type "Gasoline"/);
++    expect(w).toMatch(/transmission "Manual"/);
++    expect(w).toMatch(/with an engine/);
++  });
++
++  it("flags a year outside the model's range", () => {
++    expect(warningsFor({ manufacturer: "Tesla", model: "Model 3", year: 2004, mileage: 100000, fuel_type: "Electric" })).toMatch(/only seen from 2018/);
++  });
++
++  it("flags body, drivetrain and engine size the model never had", () => {
++    const w = warningsFor({ manufacturer: "Honda", model: "Civic", year: 2018, mileage: 60000, body_type: "Truck", drivetrain: "4WD", engine_size: 6.2 });
++    expect(w).toMatch(/body type "Truck"/);
++    expect(w).toMatch(/drivetrain "4WD"/);
++    expect(w).toMatch(/6.2 L engine/);
++  });
++
++  it("flags implausible miles for the car's age", () => {
++    expect(warningsFor({ ...camry, year: 2025, mileage: 300000 })).toMatch(/miles a year/);
++  });
++
++  it("stays quiet for every valid catalogue combination", () => {
++    for (const make of artifact.catalog) {
++      for (const m of make.models) {
++        const year = Math.round((m.years[0] + m.years[1]) / 2);
++        const fuel = m.fuelTypes[0];
++        const w = predictPrice(artifact, {
++          manufacturer: make.name, model: m.name, year, mileage: Math.max(0, 2026 - year) * 12000,
++          fuel_type: fuel, transmission: m.transmissions[0], body_type: m.bodyTypes[0], drivetrain: m.drivetrains[0],
++          engine_size: fuel === "Electric" ? null : m.engineSizes[0] ?? null,
++        }).warnings;
++        expect(w).toEqual([]);
++      }
++    }
++  });
++});
++
++describe("forecast", () => {
++  it("reports the real age, even past the model's internal cap", () => {
++    const f = predictPrice(artifact, { ...camry, manufacturer: "Honda", model: "Civic", year: 1980, mileage: 150000 }).depreciation_forecast;
++    expect(f[0].vehicle_age).toBe(46);
++    expect(f[1].vehicle_age).toBe(47);
++  });
++});
