@@ -112,3 +112,16 @@ describe("model matching", () => {
     expect(findModel([{ name: "A3" }], "")).toBeUndefined();
   });
 });
+
+describe("mileage", () => {
+  it("never makes a car worth more", () => {
+    for (const car of [camry, { ...camry, manufacturer: "Ford", model: "F-150", year: 2014 }]) {
+      let previous = Infinity;
+      for (let mileage = 0; mileage <= 200_000; mileage += 1_000) {
+        const p = price({ ...car, mileage });
+        expect(p).toBeLessThanOrEqual(previous);
+        previous = p;
+      }
+    }
+  });
+});

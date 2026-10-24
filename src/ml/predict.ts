@@ -55,6 +55,22 @@ export interface PredictionResult {
 
 const roundPrice = (value: number) => Math.max(0, Math.round(value / 50) * 50);
 
+// trees learn price in steps, so a low-mileage car can land on a slightly cheaper step.
+// a car never gains value from extra miles: take the best estimate over a 1,000-mile grid from
+// this mileage upward. a lower mileage always sees a superset of points, so price never rises.
+const MILEAGE_STEP = 1_000;
+const MILEAGE_GRID_MAX = 400_000;
+
+function monotoneLogs(fitted: FittedPipeline, vehicle: CompleteVehicle): Record<ModelName, number> {
+  const start = Math.floor(vehicle.mileage / MILEAGE_STEP) * MILEAGE_STEP;
+  const logs = predictLogAll(fitted, { ...vehicle, mileage: start });
+  for (let miles = start + MILEAGE_STEP; miles <= MILEAGE_GRID_MAX; miles += MILEAGE_STEP) {
+    const more = predictLogAll(fitted, { ...vehicle, mileage: miles });
+    for (const name of MODEL_NAMES) logs[name] = Math.max(logs[name], more[name]);
+  }
+  return logs;
+}
+
 const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const compact = (s: string) => words(s).replace(/ /g, "");
 
@@ -142,7 +158,7 @@ export function predictPrice(
 
   const fitted: FittedPipeline = { preprocessor: artifact.preprocessor, models: artifact.models };
   const { vehicle, imputed } = imputeRecord(fitted.preprocessor, record);
-  const logs = predictLogAll(fitted, vehicle);
+  const logs = monotoneLogs(fitted, vehicle);
   const best = artifact.bestModel;
   const point = Math.exp(logs[best]);
   const q = artifact.evaluation[best].residualQuantiles;
