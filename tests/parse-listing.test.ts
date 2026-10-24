@@ -69,6 +69,8 @@ describe("normalizeListing", () => {
     });
     const r = normalizeListing(raw, artifact);
     expect(r.manufacturer).toBe("Chevrolet");
+    expect(r.model).toBe("Silverado 1500");
+    expect(r.known_model).toBe(true);
     expect(r.fuel_type).toBe("Gasoline");
     expect(r.transmission).toBe("Automatic");
     expect(r.drivetrain).toBe("4WD");

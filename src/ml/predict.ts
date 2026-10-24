@@ -55,6 +55,30 @@ export interface PredictionResult {
 
 const roundPrice = (value: number) => Math.max(0, Math.round(value / 50) * 50);
 
+const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const compact = (s: string) => words(s).replace(/ /g, "");
+
+/**
+ * matches a model name to the catalogue, tolerating trims and spacing:
+ * exact ("cr v" -> CR-V), leading words ("civic ex" -> Civic, "f150 xlt" -> F-150),
+ * then a unique catalogue name containing the leading words ("silverado 4x4" -> Silverado 1500).
+ */
+export function findModel<T extends { name: string }>(models: T[], text: string): T | undefined {
+  const tokens = words(text).split(" ").filter(Boolean);
+  for (let k = tokens.length; k >= 1; k--) {
+    const head = tokens.slice(0, k).join("");
+    const hit = models.find((m) => compact(m.name) === head);
+    if (hit) return hit;
+  }
+  for (let k = tokens.length; k >= 1; k--) {
+    const phrase = ` ${tokens.slice(0, k).join(" ")} `;
+    if (phrase.trim().length < 3) continue;
+    const hits = models.filter((m) => ` ${words(m.name)} `.includes(phrase));
+    if (hits.length === 1) return hits[0];
+  }
+  return undefined;
+}
+
 /** Case-insensitive match of make/model against the training catalogue (aliases resolved). */
 export function resolveVehicleIdentity(artifact: ModelArtifact, manufacturerInput: string, modelInput: string) {
   const makeText = cleanText(manufacturerInput) ?? "";
@@ -62,7 +86,7 @@ export function resolveVehicleIdentity(artifact: ModelArtifact, manufacturerInpu
   const wanted = (alias ?? makeText).toLowerCase();
   const make = artifact.catalog.find((m) => m.name.toLowerCase() === wanted);
   const modelText = cleanText(modelInput) ?? "";
-  const model = make?.models.find((m) => m.name.toLowerCase() === modelText.toLowerCase());
+  const model = make ? findModel(make.models, modelText) : undefined;
   return {
     manufacturer: make?.name ?? alias ?? makeText,
     model: model?.name ?? modelText,

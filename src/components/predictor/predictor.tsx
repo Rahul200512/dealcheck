@@ -94,13 +94,17 @@ function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormSta
   const make = options.manufacturers.find((m) => m.name === p.manufacturer);
   if (!make) return { form: prev, note: "Couldn't match the make to a car we know. Fill the form below instead." };
   const model = make.models.find((m) => m.name === p.model);
+  // unknown model: fall back to the most common one that fits the stated year and fuel, so they are kept
+  const fits = (m: (typeof make.models)[number]) =>
+    (!p.year || (p.year >= m.years[0] && p.year <= m.years[1])) && (!p.fuel_type || m.fuelTypes.includes(p.fuel_type));
+  const fallback = [...make.models].sort((a, b) => b.count - a.count).find(fits) ?? make.models[0];
   const keep: Partial<FormState> = { asking_price: p.asking_price ? String(p.asking_price) : "" };
   if (p.year) keep.year = String(p.year);
   if (p.mileage != null) keep.mileage = String(p.mileage);
   if (p.condition) keep.condition = p.condition;
   if (p.owners) keep.owners = String(Math.min(6, p.owners));
   if (p.accident_history != null) keep.accident_history = p.accident_history ? "yes" : "no";
-  const form = stateForModel(options, make.name, model?.name ?? make.models[0].name, keep);
+  const form = stateForModel(options, make.name, (model ?? fallback).name, keep);
   if (p.fuel_type) form.fuel_type = p.fuel_type;
   if (p.transmission) form.transmission = p.transmission;
   if (p.body_type) form.body_type = p.body_type;
@@ -271,7 +275,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-12">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
       <form onSubmit={submit} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-8 lg:col-span-7">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

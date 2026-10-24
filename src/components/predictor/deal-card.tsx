@@ -12,11 +12,13 @@ const TONES: Record<DealRating, { box: string; badge: string }> = {
 };
 
 export function DealCard({ deal, factors }: { deal: DealVerdict; factors: PriceFactor[] }) {
-  const tone = TONES[deal.rating];
+  // a suspiciously low price is a warning, not a win
+  const tone = deal.too_good_to_be_true ? TONES.high : TONES[deal.rating];
+  const label = deal.too_good_to_be_true ? "Suspiciously low" : deal.label;
   return (
     <section className={`rounded-3xl border p-6 shadow-sm ${tone.box}`} aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className={`rounded-full px-3 py-1 text-sm font-semibold ${tone.badge}`}>{deal.label}</span>
+        <span className={`rounded-full px-3 py-1 text-sm font-semibold ${tone.badge}`}>{label}</span>
         <span className="text-sm text-slate-600">
           asking <span className="font-semibold text-slate-900">{formatUsd(deal.asking_price)}</span> · fair{" "}
           <span className="font-semibold text-slate-900">{formatUsd(deal.fair_price)}</span>

@@ -122,7 +122,7 @@ export default function DocsPage() {
         </div>
       </header>
 
-      <div className="mt-10 grid gap-8 lg:grid-cols-12">
+      <div className="mt-10 grid grid-cols-1 gap-8 lg:grid-cols-12">
         <aside className="hidden lg:col-span-3 lg:block">
           <nav className="sticky top-24 space-y-1 text-sm">
             {endpoints.map((e) => (

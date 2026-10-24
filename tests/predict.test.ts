@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ModelArtifact } from "@/ml/artifact";
-import { predictPrice, type PredictionInput } from "@/ml/predict";
+import { findModel, predictPrice, resolveVehicleIdentity, type PredictionInput } from "@/ml/predict";
 import { MODEL_NAMES } from "@/ml/schema";
 
 // Behavioural tests against the saved production artifact.
@@ -81,5 +81,34 @@ describe("saved model artifact", () => {
       expect(forecast[i].estimated_price).toBeLessThanOrEqual(forecast[i - 1].estimated_price);
       expect(forecast[i].mileage).toBeGreaterThan(forecast[i - 1].mileage);
     }
+  });
+});
+
+describe("model matching", () => {
+  const model = (make: string, text: string) => {
+    const id = resolveVehicleIdentity(artifact, make, text);
+    return id.knownModel ? id.model : null;
+  };
+
+  it("ignores trims and spacing", () => {
+    expect(model("Honda", "Civic EX")).toBe("Civic");
+    expect(model("Ford", "f150 xlt")).toBe("F-150");
+    expect(model("Honda", "cr v")).toBe("CR-V");
+    expect(model("Mazda", "mazda 3 touring")).toBe("Mazda3");
+    expect(model("Ford", "Mustang Mach-E GT")).toBe("Mustang Mach-E");
+    expect(model("Jeep", "grand cherokee limited")).toBe("Grand Cherokee");
+  });
+
+  it("expands a short name when only one model fits", () => {
+    expect(model("chevy", "silverado")).toBe("Silverado 1500");
+    expect(model("Chevrolet", "Silverado 4x4")).toBe("Silverado 1500");
+    expect(model("Mazda", "miata")).toBe("MX-5 Miata");
+  });
+
+  it("stays unknown when the text is ambiguous or unrelated", () => {
+    expect(model("Tesla", "model")).toBeNull();
+    expect(model("BMW", "m340i")).toBeNull();
+    expect(model("Toyota", "Supra Mk4")).toBeNull();
+    expect(findModel([{ name: "A3" }], "")).toBeUndefined();
   });
 });

@@ -37,7 +37,7 @@ describe("rateDeal", () => {
   it("writes a plain summary", () => {
     expect(rateDeal(10000, 10000, range).summary).toBe("Asking price matches the estimated fair price of $10,000.");
     expect(rateDeal(11000, 10000, range).summary).toBe(
-      "Asking price is $1,000 (10.0 %) above the estimated fair price of $10,000.",
+      "Asking price is $1,000 (10.0%) above the estimated fair price of $10,000.",
     );
   });
 

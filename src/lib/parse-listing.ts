@@ -59,6 +59,7 @@ export function buildPrompt(text: string): string {
     "Return only a JSON object with these keys: manufacturer, model, year, mileage, fuel_type, transmission,",
     "body_type, drivetrain, engine_size, condition, owners, accident_history, asking_price.",
     "Rules:",
+    "- model is the base model name without trim or drivetrain (\"Civic EX\" -> \"Civic\", \"Silverado 4x4\" -> \"Silverado\").",
     "- use null for anything the text does not state. never guess.",
     "- mileage in miles as a number (\"90k miles\" -> 90000). asking_price in US dollars as a number.",
     "- engine_size in litres. owners = number of previous owners.",

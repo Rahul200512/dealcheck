@@ -56,7 +56,7 @@ export function rateDeal(asking: number, fair: number, range: { low: number; hig
   let summary =
     Math.abs(pct) < 0.005
       ? `Asking price matches the estimated fair price of ${usd(fair)}.`
-      : `Asking price is ${usd(difference)} (${Math.abs(pct * 100).toFixed(1)} %) ${direction} the estimated fair price of ${usd(fair)}.`;
+      : `Asking price is ${usd(difference)} (${Math.abs(pct * 100).toFixed(1)}%) ${direction} the estimated fair price of ${usd(fair)}.`;
   if (too_good_to_be_true) {
     summary += " That is far below similar cars, so check the title, accident history and service records before buying.";
   }
