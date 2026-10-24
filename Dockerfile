@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# ── CarValue ML — Next.js web app + prediction API ───────────────────────────────
+# ── DealCheck — Next.js web app + prediction API ───────────────────────────────
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

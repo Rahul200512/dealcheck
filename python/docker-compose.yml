@@ -6,12 +6,12 @@ services:
     build:
       context: ..
       dockerfile: python/Dockerfile
-    image: carvalue-ml-python
+    image: dealcheck-python
     ports:
       - "8000:8000"
 
   ui:
-    image: carvalue-ml-python
+    image: dealcheck-python
     depends_on:
       - api
     command: ["streamlit", "run", "app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

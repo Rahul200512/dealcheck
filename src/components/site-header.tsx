@@ -21,7 +21,7 @@ export function SiteHeader() {
             </svg>
           </span>
           <span className="text-base font-semibold tracking-tight text-slate-900">
-            CarValue <span className="text-indigo-600">ML</span>
+            Deal<span className="text-indigo-600">Check</span>
           </span>
         </Link>
         <nav className="flex items-center gap-1">

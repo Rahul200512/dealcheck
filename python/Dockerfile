@@ -1,4 +1,4 @@
-# Build from the repository root:  docker build -f python/Dockerfile -t carvalue-ml-python .
+# Build from the repository root:  docker build -f python/Dockerfile -t dealcheck-python .
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
