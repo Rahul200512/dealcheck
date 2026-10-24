@@ -84,30 +84,40 @@ export class ParseError extends Error {
   }
 }
 
+// gemini answers these when it is briefly overloaded; one retry usually succeeds
+const TRANSIENT = new Set([429, 500, 502, 503, 504]);
+const BUSY_MESSAGE = "The AI is busy right now. Try again in a moment";
+
 /** calls gemini generateContent and returns the raw json text */
 export async function callGemini(
   text: string,
-  opts: { apiKey: string; model?: string; fetchImpl?: FetchLike },
+  opts: { apiKey: string; model?: string; fetchImpl?: FetchLike; retryDelayMs?: number },
 ): Promise<string> {
   const model = opts.model || DEFAULT_GEMINI_MODEL;
   const doFetch = opts.fetchImpl ?? (fetch as unknown as FetchLike);
-  const response = await doFetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-    {
+  const send = () =>
+    doFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": opts.apiKey },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: buildPrompt(text) }] }],
         generationConfig: { temperature: 0, responseMimeType: "application/json" },
       }),
-    },
-  );
-  if (!response.ok) throw new ParseError(`AI service returned ${response.status}`, 502);
+    });
+  let response = await send();
+  if (!response.ok && TRANSIENT.has(response.status)) {
+    await new Promise((r) => setTimeout(r, opts.retryDelayMs ?? 700));
+    response = await send();
+  }
+  if (!response.ok) {
+    console.error(`[parse] gemini returned ${response.status}`);
+    throw new ParseError(TRANSIENT.has(response.status) ? BUSY_MESSAGE : "The AI service is unavailable", 502);
+  }
   const data = (await response.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
   };
   const out = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-  if (!out.trim()) throw new ParseError("AI service returned an empty answer", 502);
+  if (!out.trim()) throw new ParseError(BUSY_MESSAGE, 502);
   return out;
 }
 
@@ -121,10 +131,12 @@ export function normalizeListing(raw: string, artifact: ModelArtifact): ParsedLi
     // some models wrap json in a ```json fence
     json = JSON.parse(raw.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, ""));
   } catch {
-    throw new ParseError("AI answer was not valid JSON", 502);
+    throw new ParseError("Couldn't read that description", 502);
   }
+  // a listing with several cars can come back as a list: use the first one
+  if (Array.isArray(json)) json = json[0] ?? {};
   const parsed = llmListingSchema.safeParse(json);
-  if (!parsed.success) throw new ParseError("AI answer did not match the expected fields", 502);
+  if (!parsed.success) throw new ParseError("Couldn't read that description", 502);
   const v = parsed.data;
 
   let manufacturer: string | null = null;

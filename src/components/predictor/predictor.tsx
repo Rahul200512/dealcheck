@@ -1,13 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { VehicleOptions } from "@/lib/model-store";
-import type { RecentPredictions } from "@/lib/prediction-log";
 import type { DealCheckResult } from "@/lib/deal-check";
 import type { ParsedListing } from "@/lib/parse-listing";
 import type { PredictionResult } from "@/ml/predict";
 import { DealCard } from "./deal-card";
-import { RecentPredictionsTable } from "./recent-predictions";
 import { ResultPanel } from "./result-panel";
 
 type TriState = "" | "yes" | "no";
@@ -179,8 +177,8 @@ export function Predictor({ options, model, aiEnabled = false }: {
   const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [recent, setRecent] = useState<RecentPredictions | null>(null);
-  const [recentLoading, setRecentLoading] = useState(true);
+  // inputs behind the result on screen, so edits after a check can be flagged
+  const [submittedKey, setSubmittedKey] = useState<string | null>(null);
   const [listingText, setListingText] = useState("");
   const [parsing, setParsing] = useState(false);
   const [parseNote, setParseNote] = useState<string | null>(null);
@@ -196,20 +194,8 @@ export function Predictor({ options, model, aiEnabled = false }: {
     return list;
   }, [options.reference_year, modelInfo]);
 
-  const refreshRecent = useCallback(async () => {
-    try {
-      const response = await fetch("/api/predictions?limit=8", { cache: "no-store" });
-      if (response.ok) setRecent((await response.json()) as RecentPredictions);
-    } catch {
-      // monitoring panel is best-effort
-    } finally {
-      setRecentLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshRecent();
-  }, [refreshRecent]);
+  const formKey = (f: FormState) => JSON.stringify({ ...toPayload(f), asking_price: f.asking_price });
+  const stale = result !== null && !loading && submittedKey !== null && submittedKey !== formKey(form);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((prev) => ({ ...prev, [key]: value }));
   const isElectric = form.fuel_type === "Electric";
@@ -266,7 +252,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
         setDeal(null);
       }
       setPayload(body);
-      void refreshRecent();
+      setSubmittedKey(formKey(form));
     } catch {
       setError("Network error — the prediction API could not be reached.");
     } finally {
@@ -367,7 +353,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
               type="number"
               min={0}
               max={1000000}
-              step={500}
+              step={1}
               required
               className={inputClass}
               value={form.mileage}
@@ -475,6 +461,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
               id="asking_price"
               type="number"
               min={1}
+              max={5000000}
               step="any"
               inputMode="numeric"
               placeholder="e.g. 18500 — add it to check if the listing is a good deal"
@@ -497,13 +484,16 @@ export function Predictor({ options, model, aiEnabled = false }: {
 
       <div className="lg:col-span-5">
         <div className="space-y-4 lg:sticky lg:top-20">
-          {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} />}
-          <ResultPanel result={result} payload={payload} loading={loading} error={error} model={model} />
+          {stale && (
+            <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="status">
+              You changed the details. Press “{form.asking_price ? "Check this deal" : "Estimate price"}” to update this result.
+            </p>
+          )}
+          <div className={stale ? "space-y-4 opacity-40 transition-opacity" : "space-y-4 transition-opacity"}>
+            {deal && result && !loading && <DealCard deal={deal.deal} factors={deal.factors} />}
+            <ResultPanel result={result} payload={payload} loading={loading} error={error} model={model} />
+          </div>
         </div>
-      </div>
-
-      <div className="lg:col-span-12">
-        <RecentPredictionsTable data={recent} loading={recentLoading} />
       </div>
     </div>
   );

@@ -13,7 +13,7 @@ const perInstance = createRateLimiter({ limit: 60, windowMs: 60_000 });
 
 function tooMany(retryAfter: number) {
   return Response.json(
-    { error: `Too many requests, try again in ${retryAfter} seconds` },
+    { error: `Too many requests, try again in ${retryAfter} second${retryAfter === 1 ? "" : "s"}` },
     { status: 429, headers: { "Retry-After": String(retryAfter) } },
   );
 }

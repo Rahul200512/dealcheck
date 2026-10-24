@@ -141,7 +141,7 @@ export default function DocsPage() {
           <Card title="Quick start">
             <CodeBlock
               label="cURL"
-              code={`curl -X POST https://<your-host>/api/predict \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(minimal)}'`}
+              code={`curl -X POST ${process.env.NEXT_PUBLIC_SITE_URL ?? "https://dealcheck-two.vercel.app"}/api/predict \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(minimal)}'`}
             />
             <p className="mt-3 text-sm text-slate-600">
               Only <code className="rounded bg-slate-100 px-1">manufacturer</code>, <code className="rounded bg-slate-100 px-1">model</code>,{" "}

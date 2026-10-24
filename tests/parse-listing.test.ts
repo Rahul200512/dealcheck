@@ -47,8 +47,24 @@ describe("callGemini", () => {
   });
 
   it("turns http errors and empty answers into parse errors", async () => {
-    await expectParseError(callGemini("x", { apiKey: "k", fetchImpl: fakeGemini("{}", 429).fetchImpl }), 502);
+    const busy = fakeGemini("{}", 429);
+    await expectParseError(callGemini("x", { apiKey: "k", fetchImpl: busy.fetchImpl, retryDelayMs: 0 }), 502);
+    expect(busy.calls).toHaveLength(2); // retried once
+    const denied = fakeGemini("{}", 403);
+    await expectParseError(callGemini("x", { apiKey: "k", fetchImpl: denied.fetchImpl, retryDelayMs: 0 }), 502);
+    expect(denied.calls).toHaveLength(1); // auth errors are not retried
     await expectParseError(callGemini("x", { apiKey: "k", fetchImpl: fakeGemini("  ").fetchImpl }), 502);
+  });
+
+  it("recovers when gemini is briefly overloaded", async () => {
+    let n = 0;
+    const fetchImpl = async () => {
+      n += 1;
+      const ok = n > 1;
+      return { ok, status: ok ? 200 : 503, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"year":2016}' }] } }] }) };
+    };
+    expect(await callGemini("x", { apiKey: "k", fetchImpl, retryDelayMs: 0 })).toBe('{"year":2016}');
+    expect(n).toBe(2);
   });
 });
 
@@ -100,6 +116,16 @@ describe("normalizeListing", () => {
     expect(r.owners).toBeNull();
     expect(r.asking_price).toBeNull();
     expect(r.filled).toEqual([]);
+  });
+
+  it("uses the first car when the answer is a list", () => {
+    const r = normalizeListing(
+      JSON.stringify([{ manufacturer: "Jeep", model: "Wrangler", year: 2014, asking_price: 18000 }, { manufacturer: "Kia", model: "Soul", year: 2019 }]),
+      artifact,
+    );
+    expect(r.manufacturer).toBe("Jeep");
+    expect(r.model).toBe("Wrangler");
+    expect(r.asking_price).toBe(18000);
   });
 
   it("rejects answers that are not the expected json", () => {
