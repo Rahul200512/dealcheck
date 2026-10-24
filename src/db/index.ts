@@ -1,24 +1,23 @@
-import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-const databaseUrl = process.env.DATABASE_URL;
-
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL is required");
-}
-
+// database is optional: without DATABASE_URL the app still serves predictions, it just skips logging
 const globalForDb = globalThis as typeof globalThis & {
-  __arenaNextJsPostgresqlPool?: Pool;
+  __dealcheckPool?: Pool;
+  __dealcheckDb?: NodePgDatabase;
 };
 
-export const pool =
-  globalForDb.__arenaNextJsPostgresqlPool ??
-  new Pool({
-    connectionString: databaseUrl,
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForDb.__arenaNextJsPostgresqlPool = pool;
+export function hasDatabase(): boolean {
+  return Boolean(process.env.DATABASE_URL);
 }
 
-export const db = drizzle(pool);
+/** returns a shared drizzle client, or null when no database is configured */
+export function getDb(): NodePgDatabase | null {
+  const url = process.env.DATABASE_URL;
+  if (!url) return null;
+  if (!globalForDb.__dealcheckDb) {
+    globalForDb.__dealcheckPool ??= new Pool({ connectionString: url });
+    globalForDb.__dealcheckDb = drizzle(globalForDb.__dealcheckPool);
+  }
+  return globalForDb.__dealcheckDb;
+}

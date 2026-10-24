@@ -30,7 +30,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - name: install
+        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - run: npx tsc --noEmit
       - run: npm test
       - name: Retrain and check the model still meets the quality bar
@@ -62,4 +63,4 @@ jobs:
     needs: [web]
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t carvalue-ml .
+      - run: docker build -t dealcheck .

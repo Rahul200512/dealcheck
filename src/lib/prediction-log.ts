@@ -1,5 +1,6 @@
 import { desc, sql } from "drizzle-orm";
-import { db } from "@/db";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { getDb } from "@/db";
 import { predictions } from "@/db/schema";
 import type { PredictionResult } from "@/ml/predict";
 
@@ -24,7 +25,7 @@ const CREATE_TABLE = `CREATE TABLE IF NOT EXISTS "predictions" (
 const CREATE_INDEX = `CREATE INDEX IF NOT EXISTS "predictions_created_at_idx" ON "predictions" USING btree ("created_at")`;
 
 let ready: Promise<void> | null = null;
-function ensureTable(): Promise<void> {
+function ensureTable(db: NodePgDatabase): Promise<void> {
   if (!ready) {
     ready = (async () => {
       await db.execute(sql.raw(CREATE_TABLE));
@@ -48,8 +49,10 @@ export interface PredictionLogEntry {
 /** Logs predictions; never throws (serving a price matters more than logging it). */
 export async function recordPredictions(entries: PredictionLogEntry[]): Promise<boolean> {
   if (entries.length === 0) return true;
+  const db = getDb();
+  if (!db) return false; // no database configured: skip logging
   try {
-    await ensureTable();
+    await ensureTable(db);
     await db.insert(predictions).values(
       entries.map(({ source, input, result }) => ({
         source,
@@ -98,8 +101,10 @@ export interface RecentPredictions {
 }
 
 export async function listRecentPredictions(limit = 10): Promise<RecentPredictions> {
+  const db = getDb();
+  if (!db) return { items: [], total: 0, average_price: 0 };
   try {
-    await ensureTable();
+    await ensureTable(db);
     const rows = await db.select().from(predictions).orderBy(desc(predictions.createdAt)).limit(limit);
     const [stats] = await db
       .select({

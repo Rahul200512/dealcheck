@@ -10,7 +10,7 @@ export function RecentPredictionsTable({ data, loading }: { data: RecentPredicti
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold text-slate-900">Recent predictions</h3>
-          <p className="mt-1 text-sm text-slate-500">Every request is logged to PostgreSQL for monitoring and future retraining.</p>
+          <p className="mt-1 text-sm text-slate-500">When a database is configured, every request is logged for monitoring and future retraining.</p>
         </div>
         {data && data.total > 0 && (
           <div className="flex gap-4 text-sm">
