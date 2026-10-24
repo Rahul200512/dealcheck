@@ -148,4 +148,29 @@ describe("POST /api/parse", () => {
     expect(res.status).toBe(503);
     if (saved !== undefined) process.env.GEMINI_API_KEY = saved;
   });
+
+  it("rate limits a client before calling the ai", async () => {
+    const saved = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key";
+    const answer = JSON.stringify({ manufacturer: "Toyota", model: "Camry", year: 2016 });
+    const fake = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: answer }] } }] }) }));
+    vi.stubGlobal("fetch", fake);
+    const from = (ip: string) => {
+      const req = post("/api/parse", { text: "2016 Toyota Camry, 90k miles" });
+      req.headers.set("x-real-ip", ip);
+      return req;
+    };
+    try {
+      for (let i = 0; i < 8; i++) expect((await parse(from("203.0.113.7"))).status).toBe(200);
+      const limited = await parse(from("203.0.113.7"));
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+      expect(fake).toHaveBeenCalledTimes(8);
+      expect((await parse(from("198.51.100.2"))).status).toBe(200); // other clients are unaffected
+    } finally {
+      vi.unstubAllGlobals();
+      if (saved === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = saved;
+    }
+  });
 });

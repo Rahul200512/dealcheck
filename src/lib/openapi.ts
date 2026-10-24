@@ -180,6 +180,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
           responses: {
             "200": { description: "Extracted fields; unknown values are null" },
             "422": { description: "Validation error" },
+            "429": { description: "Rate limited (8 requests per minute per client); see Retry-After" },
             "502": { description: "The AI answer could not be used" },
             "503": { description: "Plain-English input not configured" },
           },
