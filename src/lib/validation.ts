@@ -40,6 +40,13 @@ export const vehicleInputSchema = z.object({
 
 export type VehicleInput = z.infer<typeof vehicleInputSchema>;
 
+// deal check: same vehicle fields plus the listing's asking price
+export const dealInputSchema = vehicleInputSchema.extend({
+  asking_price: z.number().positive("asking_price must be greater than 0").max(5_000_000),
+});
+
+export type DealInput = z.infer<typeof dealInputSchema>;
+
 export const batchInputSchema = z.object({
   vehicles: z.array(vehicleInputSchema).min(1, "provide at least one vehicle").max(100, "at most 100 vehicles per request"),
 });
