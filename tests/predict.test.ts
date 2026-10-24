@@ -125,3 +125,13 @@ describe("mileage", () => {
     }
   });
 });
+
+describe("condition", () => {
+  it("never makes a better car worth less", () => {
+    const porsche: PredictionInput = { manufacturer: "Porsche", model: "911", year: 2012, mileage: 54000, transmission: "Manual" };
+    for (const car of [camry, porsche]) {
+      const prices = ["Excellent", "Good", "Fair", "Poor"].map((condition) => price({ ...car, condition }));
+      for (let i = 1; i < prices.length; i++) expect(prices[i]).toBeLessThanOrEqual(prices[i - 1]);
+    }
+  });
+});

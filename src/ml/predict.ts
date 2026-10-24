@@ -15,7 +15,7 @@ import {
   resolveManufacturerAlias,
 } from "./normalize";
 import { imputeRecord, vehicleAge } from "./preprocess";
-import { MODEL_LABELS, MODEL_NAMES, type CompleteVehicle, type ModelName, type VehicleRecord } from "./schema";
+import { CONDITIONS, MODEL_LABELS, MODEL_NAMES, type CompleteVehicle, type ModelName, type VehicleRecord } from "./schema";
 
 export interface PredictionInput {
   manufacturer: string;
@@ -61,12 +61,22 @@ const roundPrice = (value: number) => Math.max(0, Math.round(value / 50) * 50);
 const MILEAGE_STEP = 1_000;
 const MILEAGE_GRID_MAX = 400_000;
 
-function monotoneLogs(fitted: FittedPipeline, vehicle: CompleteVehicle): Record<ModelName, number> {
+function mileageLogs(fitted: FittedPipeline, vehicle: CompleteVehicle): Record<ModelName, number> {
   const start = Math.floor(vehicle.mileage / MILEAGE_STEP) * MILEAGE_STEP;
   const logs = predictLogAll(fitted, { ...vehicle, mileage: start });
   for (let miles = start + MILEAGE_STEP; miles <= MILEAGE_GRID_MAX; miles += MILEAGE_STEP) {
     const more = predictLogAll(fitted, { ...vehicle, mileage: miles });
     for (const name of MODEL_NAMES) logs[name] = Math.max(logs[name], more[name]);
+  }
+  return logs;
+}
+
+// same idea for condition: a car in better condition is never worth less than the same car in worse condition
+function monotoneLogs(fitted: FittedPipeline, vehicle: CompleteVehicle): Record<ModelName, number> {
+  const logs = mileageLogs(fitted, vehicle);
+  for (const condition of CONDITIONS.slice(CONDITIONS.indexOf(vehicle.condition) + 1)) {
+    const worse = mileageLogs(fitted, { ...vehicle, condition });
+    for (const name of MODEL_NAMES) logs[name] = Math.max(logs[name], worse[name]);
   }
   return logs;
 }
