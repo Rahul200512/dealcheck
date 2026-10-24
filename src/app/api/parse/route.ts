@@ -44,7 +44,7 @@ export async function POST(request: Request) {
 
   try {
     const raw = await callGemini(parsed.data.text, { apiKey, model: process.env.GEMINI_MODEL });
-    return Response.json(normalizeListing(raw, getModelArtifact()));
+    return Response.json(normalizeListing(raw, getModelArtifact(), parsed.data.text));
   } catch (error) {
     if (error instanceof ParseError) return Response.json({ error: error.message }, { status: error.status });
     console.error("[parse] unexpected error", error);

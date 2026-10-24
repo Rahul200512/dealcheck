@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { VehicleOptions } from "@/lib/model-store";
 import type { DealCheckResult } from "@/lib/deal-check";
 import type { ParsedListing } from "@/lib/parse-listing";
@@ -97,10 +97,6 @@ function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormSta
   const make = options.manufacturers.find((m) => m.name === p.manufacturer);
   if (!make) return { form: prev, note: "Couldn't match the make to a car we know. Fill the form below instead." };
   const model = make.models.find((m) => m.name === p.model);
-  // unknown model: fall back to the most common one that fits the stated year and fuel, and say so
-  const fits = (m: (typeof make.models)[number]) =>
-    (!p.year || (p.year >= m.years[0] && p.year <= m.years[1])) && (!p.fuel_type || m.fuelTypes.includes(p.fuel_type));
-  const chosen = model ?? [...make.models].sort((a, b) => b.count - a.count).find(fits) ?? make.models[0];
   // only what the listing states; everything else is left blank instead of guessed
   const keep: Partial<FormState> = {
     year: p.year ? String(p.year) : "",
@@ -112,7 +108,13 @@ function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormSta
     accident_history: p.accident_history == null ? "" : p.accident_history ? "yes" : "no",
     asking_price: p.asking_price ? String(p.asking_price) : "",
   };
-  const form = stateForModel(options, make.name, chosen.name, keep);
+  const form = stateForModel(options, make.name, model?.name ?? make.models[0].name, keep);
+  if (!model) {
+    // the model was not stated (or not recognised): leave it for the person to pick, never substitute one
+    form.model = "";
+    form.fuel_type = p.fuel_type ?? "";
+    form.transmission = p.transmission ?? (p.fuel_type === "Electric" ? "Automatic" : "");
+  }
   // a stated value wins even when it is unusual for the model; the form flags it rather than hiding it
   if (p.fuel_type) form.fuel_type = p.fuel_type;
   if (p.transmission) form.transmission = p.transmission;
@@ -120,14 +122,18 @@ function formFromParsed(options: VehicleOptions, p: ParsedListing, prev: FormSta
   if (p.drivetrain) form.drivetrain = p.drivetrain;
   if (p.engine_size != null) form.engine_size = String(p.engine_size);
   const count = p.filled.length;
-  const missing = [!form.year && "model year", !form.mileage && "mileage"].filter(Boolean) as string[];
-  const head = model
-    ? `Filled ${count} field${count === 1 ? "" : "s"} from your description.`
-    : `Found ${make.name}, but not that model, so the ${chosen.name} is selected. Change it if that's wrong.`;
-  const tail = missing.length
-    ? ` The listing doesn't say the ${missing.join(" or ")}. Add ${missing.length === 1 ? "it" : "them"} below to continue.`
-    : " Check the fields, then run the estimate.";
-  return { form, note: head + tail };
+  const mileageConflict = (p.conflicts ?? []).find((c) => c.field === "mileage");
+  const missing = [!form.model && "model", !form.year && "model year", !form.mileage && !mileageConflict && "mileage"].filter(
+    Boolean,
+  ) as string[];
+  const parts = [model ? `Filled ${count} field${count === 1 ? "" : "s"} from your description.` : `Found ${make.name}, but not which model.`];
+  if (mileageConflict) {
+    const values = mileageConflict.values.map((m) => m.toLocaleString("en-US")).join(" and ");
+    parts.push(`The listing mentions ${values} miles, so the mileage is left blank. Enter the right one.`);
+  }
+  if (missing.length) parts.push(`The listing doesn't say the ${missing.join(" or ")}. Pick ${missing.length === 1 ? "it" : "them"} below to continue.`);
+  if (!mileageConflict && !missing.length) parts.push("Check the fields, then run the estimate.");
+  return { form, note: parts.join(" ") };
 }
 
 function describeError(data: unknown): string {
@@ -197,15 +203,22 @@ export function Predictor({ options, model, aiEnabled = false }: {
   const [listingText, setListingText] = useState("");
   const [parsing, setParsing] = useState(false);
   const [parseNote, setParseNote] = useState<string | null>(null);
+  // latest form and description, read when an ai answer arrives to tell whether it is still current
+  const latest = useRef({ form, listingText });
+  useEffect(() => {
+    latest.current = { form, listingText };
+  }, [form, listingText]);
 
   const make = useMemo(
     () => options.manufacturers.find((m) => m.name === form.manufacturer) ?? options.manufacturers[0],
     [options, form.manufacturer],
   );
-  const modelInfo = useMemo(() => make.models.find((m) => m.name === form.model) ?? make.models[0], [make, form.model]);
+  // undefined while no model is picked (the listing didn't name one)
+  const modelInfo = useMemo(() => make.models.find((m) => m.name === form.model), [make, form.model]);
   const years = useMemo(() => {
+    const [first, last] = modelInfo ? modelInfo.years : [MIN_YEAR, options.reference_year];
     const list: number[] = [];
-    for (let y = Math.min(options.reference_year, modelInfo.years[1]); y >= modelInfo.years[0]; y--) list.push(y);
+    for (let y = Math.min(options.reference_year, last); y >= first; y--) list.push(y);
     return list;
   }, [options.reference_year, modelInfo]);
 
@@ -213,22 +226,25 @@ export function Predictor({ options, model, aiEnabled = false }: {
   const modelName = `${form.manufacturer} ${form.model}`;
   const mismatches: string[] = [];
   const yearNum = Number(form.year);
-  if (form.year && (yearNum < modelInfo.years[0] || yearNum > modelInfo.years[1])) {
-    mismatches.push(`${form.year}: the ${modelName} was only seen from ${modelInfo.years[0]} to ${modelInfo.years[1]}.`);
-  }
-  const flag = (label: string, value: string, seen: string[]) => {
-    if (value && seen.length > 0 && !seen.includes(value)) mismatches.push(`${label} ${value}: the ${modelName} was only seen as ${seen.join(", ")}.`);
-  };
-  flag("Fuel", form.fuel_type, modelInfo.fuelTypes);
-  flag("Transmission", form.transmission, modelInfo.transmissions);
-  flag("Body", form.body_type, modelInfo.bodyTypes);
-  flag("Drivetrain", form.drivetrain, modelInfo.drivetrains);
-  const engineNum = Number(form.engine_size);
-  if (form.fuel_type !== "Electric" && form.engine_size !== "" && engineNum > 0) {
-    if (modelInfo.engineSizes.length === 0) {
-      mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen as ${modelInfo.fuelTypes.join(", ")}, with no engine.`);
-    } else if (engineNum < Math.min(...modelInfo.engineSizes) - 0.5 || engineNum > Math.max(...modelInfo.engineSizes) + 0.5) {
-      mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen with ${modelInfo.engineSizes.join(", ")} L.`);
+  if (modelInfo) collectMismatches(modelInfo);
+  function collectMismatches(modelInfo: (typeof make.models)[number]) {
+    if (form.year && (yearNum < modelInfo.years[0] || yearNum > modelInfo.years[1])) {
+      mismatches.push(`${form.year}: the ${modelName} was only seen from ${modelInfo.years[0]} to ${modelInfo.years[1]}.`);
+    }
+    const flag = (label: string, value: string, seen: string[]) => {
+      if (value && seen.length > 0 && !seen.includes(value)) mismatches.push(`${label} ${value}: the ${modelName} was only seen as ${seen.join(", ")}.`);
+    };
+    flag("Fuel", form.fuel_type, modelInfo.fuelTypes);
+    flag("Transmission", form.transmission, modelInfo.transmissions);
+    flag("Body", form.body_type, modelInfo.bodyTypes);
+    flag("Drivetrain", form.drivetrain, modelInfo.drivetrains);
+    const engineNum = Number(form.engine_size);
+    if (form.fuel_type !== "Electric" && form.engine_size !== "" && engineNum > 0) {
+      if (modelInfo.engineSizes.length === 0) {
+        mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen as ${modelInfo.fuelTypes.join(", ")}, with no engine.`);
+      } else if (engineNum < Math.min(...modelInfo.engineSizes) - 0.5 || engineNum > Math.max(...modelInfo.engineSizes) + 0.5) {
+        mismatches.push(`Engine ${form.engine_size} L: the ${modelName} was only seen with ${modelInfo.engineSizes.join(", ")} L.`);
+      }
     }
   }
   const yearOptions = form.year && !years.includes(yearNum) ? [...years, yearNum].sort((a, b) => b - a) : years;
@@ -242,18 +258,25 @@ export function Predictor({ options, model, aiEnabled = false }: {
   async function fillFromText() {
     setParsing(true);
     setParseNote(null);
+    // what the answer will be about; if either changes while the ai reads, the answer is stale
+    const sentText = listingText;
+    const sentForm = JSON.stringify(form);
     try {
       const response = await fetch("/api/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: listingText }),
+        body: JSON.stringify({ text: sentText }),
       });
       const data: unknown = await response.json();
+      if (latest.current.listingText !== sentText || JSON.stringify(latest.current.form) !== sentForm) {
+        setParseNote("You changed the form or the description while the AI was reading, so its answer wasn't applied. Click “Fill the form” again to use it.");
+        return;
+      }
       if (!response.ok) {
         setParseNote(`${describeError(data)}. You can still fill the form below.`);
         return;
       }
-      const { form: next, note } = formFromParsed(options, data as ParsedListing, form);
+      const { form: next, note } = formFromParsed(options, data as ParsedListing, latest.current.form);
       setForm(next);
       setParseNote(note);
     } catch {
@@ -321,6 +344,8 @@ export function Predictor({ options, model, aiEnabled = false }: {
               className={`${inputClass} mt-2 resize-y`}
               placeholder="e.g. 2019 Honda Civic EX, 64k miles, automatic, one owner, no accidents, asking $17,900"
               value={listingText}
+              readOnly={parsing}
+              aria-busy={parsing}
               onChange={(e) => setListingText(e.target.value)}
             />
             <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -343,7 +368,10 @@ export function Predictor({ options, model, aiEnabled = false }: {
             <button
               key={preset.label}
               type="button"
-              onClick={() => setForm(applyPreset(options, preset.values))}
+              onClick={() => {
+                setForm(applyPreset(options, preset.values));
+                setParseNote(null); // the ai note described the previous form, not this preset
+              }}
               className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
             >
               {preset.label}
@@ -367,13 +395,15 @@ export function Predictor({ options, model, aiEnabled = false }: {
               ))}
             </select>
           </Field>
-          <Field label="Model" htmlFor="model" hint={`${formatCount(modelInfo.count)} listings in training data`}>
+          <Field label="Model" htmlFor="model" hint={modelInfo ? `${formatCount(modelInfo.count)} listings in training data` : "pick the model"}>
             <select
               id="model"
+              required
               className={inputClass}
               value={form.model}
               onChange={(e) => setForm((prev) => stateForModel(options, prev.manufacturer, e.target.value, prev))}
             >
+              {form.model === "" && <option value="">Select the model</option>}
               {make.models.map((m) => (
                 <option key={m.name} value={m.name}>{m.name}</option>
               ))}
@@ -383,7 +413,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
             <select id="year" required className={inputClass} value={form.year} onChange={(e) => update("year", e.target.value)}>
               {form.year === "" && <option value="">Select the year</option>}
               {yearOptions.map((y) => (
-                <option key={y} value={y}>{years.includes(y) ? y : `${y} (not in data for this model)`}</option>
+                <option key={y} value={y}>{!modelInfo || years.includes(y) ? y : `${y} (not in data for this model)`}</option>
               ))}
             </select>
           </Field>
@@ -415,7 +445,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
               value={form.fuel_type}
               onChange={(v) => setForm((prev) => ({ ...prev, fuel_type: v, ...(v === "Electric" ? { transmission: "Automatic", engine_size: "" } : {}) }))}
               options={[{ value: "", label: "Not sure" }, ...options.fuel_types.map((f) => ({ value: f, label: f }))]}
-              available={modelInfo.fuelTypes}
+              available={modelInfo?.fuelTypes}
             />
           </Field>
           <Field label="Transmission">
@@ -423,7 +453,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
               value={form.transmission}
               onChange={(v) => update("transmission", v)}
               options={[{ value: "", label: "Not sure" }, ...options.transmissions.map((t) => ({ value: t, label: t }))]}
-              available={isElectric ? ["Automatic"] : modelInfo.transmissions}
+              available={isElectric ? ["Automatic"] : modelInfo?.transmissions}
             />
           </Field>
         </div>
@@ -449,17 +479,17 @@ export function Predictor({ options, model, aiEnabled = false }: {
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Field label="Body type" htmlFor="body_type">
               <select id="body_type" className={inputClass} value={form.body_type} onChange={(e) => update("body_type", e.target.value)}>
-                <option value="">Auto ({modelInfo.bodyTypes[0] ?? "most common"})</option>
+                <option value="">Auto ({modelInfo?.bodyTypes[0] ?? "most common"})</option>
                 {options.body_types.map((b) => (
-                  <option key={b} value={b}>{modelInfo.bodyTypes.includes(b) ? b : `${b} (not seen for this model)`}</option>
+                  <option key={b} value={b}>{!modelInfo || modelInfo.bodyTypes.includes(b) ? b : `${b} (not seen for this model)`}</option>
                 ))}
               </select>
             </Field>
             <Field label="Drivetrain" htmlFor="drivetrain">
               <select id="drivetrain" className={inputClass} value={form.drivetrain} onChange={(e) => update("drivetrain", e.target.value)}>
-                <option value="">Auto ({modelInfo.drivetrains[0] ?? "most common"})</option>
+                <option value="">Auto ({modelInfo?.drivetrains[0] ?? "most common"})</option>
                 {options.drivetrains.map((d) => (
-                  <option key={d} value={d}>{modelInfo.drivetrains.includes(d) ? d : `${d} (not seen for this model)`}</option>
+                  <option key={d} value={d}>{!modelInfo || modelInfo.drivetrains.includes(d) ? d : `${d} (not seen for this model)`}</option>
                 ))}
               </select>
             </Field>
@@ -472,7 +502,7 @@ export function Predictor({ options, model, aiEnabled = false }: {
                 step={0.1}
                 disabled={isElectric}
                 className={inputClass}
-                placeholder={isElectric ? "Not applicable (electric)" : modelInfo.engineSizes.length ? `Auto · e.g. ${modelInfo.engineSizes.slice(0, 4).join(" / ")}` : "Auto"}
+                placeholder={isElectric ? "Not applicable (electric)" : modelInfo?.engineSizes.length ? `Auto · e.g. ${modelInfo.engineSizes.slice(0, 4).join(" / ")}` : "Auto"}
                 value={isElectric ? "" : form.engine_size}
                 onChange={(e) => update("engine_size", e.target.value)}
               />

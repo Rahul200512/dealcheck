@@ -133,3 +133,46 @@ describe("normalizeListing", () => {
     expect(() => normalizeListing('{"year":"two thousand"}', artifact)).toThrow();
   });
 });
+
+describe("checking ai answers against the listing text", () => {
+  const answer = (fields: Record<string, unknown>) => JSON.stringify({ manufacturer: "Honda", model: "Accord", year: 2018, ...fields });
+
+  it("does not turn a clean title into 'no accidents'", () => {
+    const r = normalizeListing(answer({ accident_history: false }), artifact, "2018 Honda Accord, 70k miles, clean title, $15,000");
+    expect(r.accident_history).toBeNull();
+  });
+
+  it("keeps 'no accidents' when the listing says it", () => {
+    for (const text of ["no accidents", "accident-free", "never been in an accident", "clean Carfax", "0 accidents reported"]) {
+      expect(normalizeListing(answer({ accident_history: false }), artifact, `2018 Accord ${text}`).accident_history).toBe(false);
+    }
+  });
+
+  it("drops an accident the listing never mentions", () => {
+    expect(normalizeListing(answer({ accident_history: true }), artifact, "2018 Honda Accord 70k").accident_history).toBeNull();
+    expect(normalizeListing(answer({ accident_history: true }), artifact, "2018 Accord, minor fender bender").accident_history).toBe(true);
+  });
+
+  it("drops condition and owners the listing does not state", () => {
+    const r = normalizeListing(answer({ condition: "Excellent", owners: 1 }), artifact, "2018 Honda Accord, runs great, 70k");
+    expect(r.condition).toBeNull();
+    expect(r.owners).toBeNull();
+    const s = normalizeListing(answer({ condition: "Good", owners: 1 }), artifact, "2018 Accord, good condition, one owner");
+    expect(s.condition).toBe("Good");
+    expect(s.owners).toBe(1);
+  });
+
+  it("leaves mileage blank and reports it when the listing gives two", () => {
+    const r = normalizeListing(answer({ mileage: 64000 }), artifact, "2019 Civic, 64,000 miles on the engine, odometer reads 120,000 miles");
+    expect(r.mileage).toBeNull();
+    expect(r.conflicts).toEqual([{ field: "mileage", values: [64000, 120000] }]);
+    expect(r.filled).not.toContain("mileage");
+  });
+
+  it("does not see a conflict when one mileage is written two ways", () => {
+    const r = normalizeListing(answer({ mileage: 64000 }), artifact, "64k miles. Mileage: 64,000");
+    expect(r.mileage).toBe(64000);
+    expect(r.conflicts).toEqual([]);
+  });
+});
+
